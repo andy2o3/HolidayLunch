@@ -56,7 +56,7 @@
 
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, doc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     // 2. Firebase project config
     const firebaseConfig = {
@@ -575,6 +575,19 @@ function App() {
       return '';
     }
   });
+  // Proof of identity for this browser (hash of name + phone/email) used to edit details from a new device
+  const [identityProof, setIdentityProof] = useState(() => {
+    try {
+      return localStorage.getItem('cartus_it_identity_proof_2026') || '';
+    } catch {
+      return '';
+    }
+  });
+  // Browsers from before "Submit" existed only remembered the name; adopt that entry once on load
+  const legacyNameRef = useRef(savedProfileKey ? '' : voterName);
+  const [participantsLoaded, setParticipantsLoaded] = useState(false);
+  const [showCancelRsvp, setShowCancelRsvp] = useState(false);
+  const [showFullResults, setShowFullResults] = useState(false);
   const [editingProfile, setEditingProfile] = useState(false);
   const [draftName, setDraftName] = useState('');
   const [draftPhone, setDraftPhone] = useState('');
@@ -644,10 +657,11 @@ function App() {
     try {
       localStorage.setItem('cartus_it_voter_email_2026', voterEmail);
       localStorage.setItem('cartus_it_saved_profile_2026', savedProfileKey);
+      localStorage.setItem('cartus_it_identity_proof_2026', identityProof);
     } catch {
       // Ignore storage restrictions
     }
-  }, [voterEmail, savedProfileKey]);
+  }, [voterEmail, savedProfileKey, identityProof]);
 
   // 1. Authenticate Anonymously with Firebase on Mount
   useEffect(() => {
@@ -771,6 +785,7 @@ function App() {
         });
         loadedParticipants.sort((a, b) => (a.updatedAtMs || 0) - (b.updatedAtMs || 0));
         setParticipants(loadedParticipants);
+        setParticipantsLoaded(true);
       },
       (err) => {
         console.error('Firestore votes listener error:', err);
@@ -836,32 +851,60 @@ function App() {
   // ============================================================================
 
   const normalizedVoterName = voterName.trim().replace(/\s+/g, ' ');
+  // The person this browser is signed in as: remembered after Submit, or restored by
+  // re-entering the same name with the phone or email used before.
   const activeParticipant = useMemo(() => {
-    if (!normalizedVoterName) return null;
-    return participants.find((p) => p.name.toLowerCase() === normalizedVoterName.toLowerCase()) || null;
-  }, [participants, normalizedVoterName]);
+    if (!savedProfileKey) return null;
+    return participants.find((p) => p.id === savedProfileKey) || null;
+  }, [participants, savedProfileKey]);
+
+  useEffect(() => {
+    if (!participantsLoaded || !legacyNameRef.current) return;
+    const legacy = legacyNameRef.current.trim().replace(/\s+/g, ' ').toLowerCase();
+    legacyNameRef.current = '';
+    if (savedProfileKey) return;
+    const match = participants.find((p) => p.name.toLowerCase() === legacy);
+    if (match) setSavedProfileKey(match.id);
+  }, [participantsLoaded]);
+
+  // Keep the remembered name in step with the roster (e.g. after an edit on another device)
+  useEffect(() => {
+    if (activeParticipant && activeParticipant.name !== voterName) setVoterName(activeParticipant.name);
+  }, [activeParticipant?.name]);
 
   // New participants need a first + last name and a phone number; people already
   // in the poll (returning on another device, or picked from "Already in") don't re-enter a phone.
   const nameIsValid = isValidFullName(normalizedVoterName);
   const phoneIsValid = isValidUSPhone(voterPhone);
   const emailIsValid = isValidEmail(voterEmail);
-  const identityReady = nameIsValid && (Boolean(activeParticipant) || (phoneIsValid && emailIsValid));
-  const identityIssue = !normalizedVoterName
-    ? 'Enter your first and last name to tap dates'
+  const identityReady = Boolean(activeParticipant);
+  const hasEmailEntered = voterEmail.trim() !== '';
+  // Someone already in the poll with the typed name (they must prove it's them with phone or email)
+  const nameTaken =
+    !activeParticipant && nameIsValid
+      ? participants.find(
+          (p) => p.name.toLowerCase() === normalizedVoterName.toLowerCase() || p.id === toDocKey(normalizedVoterName)
+        ) || null
+      : null;
+  const formIssue = !normalizedVoterName
+    ? ''
     : !nameIsValid
     ? 'Please enter your first AND last name'
-    : !activeParticipant && !phoneIsValid
-    ? 'Enter your phone number with area code'
-    : !identityReady
+    : hasEmailEntered && !emailIsValid
     ? 'Check your email address (or leave it blank)'
+    : nameTaken
+    ? phoneIsValid || hasEmailEntered
+      ? ''
+      : 'Enter the phone or email you used before'
+    : !phoneIsValid
+    ? 'Enter your phone number with area code'
     : '';
 
-  // Returns true when the user can participate; otherwise explains what's missing.
+  // Returns true when this browser is signed in as someone; otherwise points them to Step 1.
   const requireIdentity = () => {
     if (identityReady) return true;
-    triggerToast(identityIssue + ' in Step 1.', 'error');
-    const el = document.getElementById(!nameIsValid ? 'voter-name-input' : !phoneIsValid ? 'voter-phone-input' : 'voter-email-input');
+    triggerToast('Enter your info and tap Submit in Step 1 first.', 'error');
+    const el = document.getElementById(!nameIsValid ? 'voter-name-input' : 'voter-submit-button');
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.focus();
@@ -883,7 +926,8 @@ function App() {
         {
           name,
           votes: {},
-          restaurantVotes: [],
+          // After restaurant voting closes, keep their vote so the final tally doesn't change
+          restaurantVotes: isRestaurantPollClosed ? activeParticipant?.restaurantVotes || [] : [],
           cantMakeIt: true,
           rsvpAfterRestaurantClose: activeParticipant ? Boolean(activeParticipant.rsvpAfterRestaurantClose) : false,
           updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
@@ -901,7 +945,7 @@ function App() {
       try {
         await setDoc(
           doc(db, 'artifacts', appId, 'private_regrets', `${roomId}__${docKey}`),
-          { name, docKey, roomId, reason, uid: user.uid, updatedAtMs: Date.now() },
+          { name, docKey, roomId, reason, uid: user.uid, proof: identityProof || '', updatedAtMs: Date.now() },
           { merge: true }
         );
       } catch (err) {
@@ -942,11 +986,64 @@ function App() {
         email: (email || '').trim().toLowerCase(),
         roomId,
         uid: user.uid,
+        proof: identityProof || '',
         updatedAtMs: Date.now(),
       },
       { merge: true }
     );
   };
+
+  // Lookup keys: SHA-256 of room + name + phone (or email). Anyone can fetch a key only if they
+  // already know that exact combination; the collection can't be listed.
+  const identityKeyId = (name, kind, value) =>
+    sha256Hex(`${roomId}|${name.trim().replace(/\s+/g, ' ').toLowerCase()}|${kind}:${value}`);
+
+  const identityCombos = (phone, email) => {
+    const combos = [];
+    if (isValidUSPhone(phone || '')) combos.push(['p', phoneDigitsOf(phone)]);
+    const e = (email || '').trim().toLowerCase();
+    if (e && isValidEmail(e)) combos.push(['e', e]);
+    return combos;
+  };
+
+  const writeIdentityKeys = async (docKey, name, phone, email) => {
+    for (const [kind, value] of identityCombos(phone, email)) {
+      try {
+        const id = await identityKeyId(name, kind, value);
+        await setDoc(doc(db, 'artifacts', appId, 'identity_keys', id), {
+          docKey,
+          roomId,
+          contactId: `${roomId}__${docKey}`,
+          uid: user.uid,
+          updatedAtMs: Date.now(),
+        });
+      } catch (err) {
+        console.error('Error saving lookup key:', err);
+      }
+    }
+  };
+
+  // Organizer: make sure everyone with contact details can be found again (covers earlier sign-ups)
+  const backfilledKeysRef = useRef(new Set());
+  useEffect(() => {
+    if (!isOrganizer || !user) return;
+    Object.entries(contacts).forEach(async ([docKey, c]) => {
+      const person = participants.find((x) => x.id === docKey);
+      const name = person?.name || c.name;
+      if (!name) return;
+      const phone = (c.phone || '').replace(/^\+1/, '');
+      for (const [kind, value] of identityCombos(phone, c.email)) {
+        const id = await identityKeyId(name, kind, value);
+        if (backfilledKeysRef.current.has(id)) continue;
+        backfilledKeysRef.current.add(id);
+        setDoc(
+          doc(db, 'artifacts', appId, 'identity_keys', id),
+          { docKey, roomId, contactId: `${roomId}__${docKey}`, uid: c.uid || user.uid, updatedAtMs: Date.now() },
+          { merge: true }
+        ).catch((err) => console.error('Error backfilling lookup key:', err));
+      }
+    });
+  }, [isOrganizer, user, contacts, participants]);
 
   // First vote without pressing Submit: save the contact implicitly.
   const saveContact = async (docKey) => {
@@ -959,18 +1056,83 @@ function App() {
     }
   };
 
-  // Step 1 "Submit": add this person to the roster and save their private contact details.
+  // Step 1 "Submit": bring a returning person back to their choices (same name + phone or email),
+  // otherwise add them to the roster and save their private contact details.
   const handleSubmitProfile = async () => {
-    if (!requireIdentity() || !user || isSavingProfile) return;
-    const docKey = toDocKey(normalizedVoterName);
+    if (!user || isSavingProfile) return;
+    const focus = (id) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.focus();
+      }
+    };
+    if (!nameIsValid) {
+      triggerToast('Please enter your first AND last name.', 'error');
+      focus('voter-name-input');
+      return;
+    }
+    if (hasEmailEntered && !emailIsValid) {
+      triggerToast('Check your email address (or leave it blank).', 'error');
+      focus('voter-email-input');
+      return;
+    }
+    const combos = identityCombos(voterPhone, voterEmail);
+    if (combos.length === 0) {
+      triggerToast('Enter your phone number with area code.', 'error');
+      focus('voter-phone-input');
+      return;
+    }
     setIsSavingProfile(true);
     try {
+      // 1. Returning? Look up name + phone, then name + email.
+      for (const [kind, value] of combos) {
+        const id = await identityKeyId(normalizedVoterName, kind, value);
+        let snap = null;
+        try {
+          snap = await getDoc(doc(db, 'artifacts', appId, 'identity_keys', id));
+        } catch (err) {
+          console.error('Lookup error:', err);
+        }
+        if (snap && snap.exists()) {
+          const data = snap.data();
+          const person = participants.find((x) => x.id === data.docKey);
+          if (person && data.roomId === roomId) {
+            setIdentityProof(id);
+            setSavedProfileKey(person.id);
+            setVoterName(person.name);
+            triggerToast(`Welcome back, ${person.name.split(' ')[0]}! Your choices are restored.`);
+            return;
+          }
+        }
+      }
+      // 2. Name already used but the phone/email didn't match
+      if (nameTaken) {
+        triggerToast(`${nameTaken.name} is already in the poll, but that phone/email doesn't match. Use the one you entered before.`, 'error');
+        focus('voter-phone-input');
+        return;
+      }
+      // 3. New person
+      if (!phoneIsValid) {
+        triggerToast('Enter your phone number with area code.', 'error');
+        focus('voter-phone-input');
+        return;
+      }
+      const docKey = toDocKey(normalizedVoterName);
       await writeContact(docKey, { name: normalizedVoterName, phone: voterPhone, email: voterEmail });
       await setDoc(
         doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey),
-        { name: normalizedVoterName, updatedAtMs: Date.now() },
+        {
+          name: normalizedVoterName,
+          votes: {},
+          restaurantVotes: [],
+          cantMakeIt: false,
+          rsvpAfterRestaurantClose: isRestaurantPollClosed,
+          updatedAtMs: Date.now(),
+        },
         { merge: true }
       );
+      await writeIdentityKeys(docKey, normalizedVoterName, voterPhone, voterEmail);
       setSavedProfileKey(docKey);
       triggerToast("You're in! Now tap the dates that work for you.");
     } catch (err) {
@@ -979,6 +1141,22 @@ function App() {
     } finally {
       setIsSavingProfile(false);
     }
+  };
+
+  const handlePickRosterName = (person) => {
+    if (activeParticipant) {
+      if (activeParticipant.id !== person.id) triggerToast("Tap \"Not Me?\" in Step 1 first to switch people.", 'info');
+      return;
+    }
+    setVoterName(person.name);
+    triggerToast(`If you're ${person.name.split(' ')[0]}, enter the phone or email you used, then tap Find my RSVP.`, 'info');
+    setTimeout(() => {
+      const el = document.getElementById('voter-phone-input');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.focus();
+      }
+    }, 50);
   };
 
   const startEditProfile = () => {
@@ -1022,6 +1200,7 @@ function App() {
           updatedAtMs: Date.now(),
         });
       }
+      await writeIdentityKeys(docKey, draftNameNormalized, draftPhone, draftEmail);
       setVoterName(draftNameNormalized);
       setVoterPhone(formatUSPhone(phoneDigitsOf(draftPhone)));
       setVoterEmail(draftEmail.trim());
@@ -1038,10 +1217,15 @@ function App() {
 
   const handleSwitchPerson = () => {
     setEditingProfile(false);
+    setShowCantMakeItForm(false);
+    setShowCancelRsvp(false);
+    setCantMakeItReason('');
     setVoterName('');
     setVoterPhone('');
     setVoterEmail('');
     setSavedProfileKey('');
+    setIdentityProof('');
+    triggerToast('This browser is reset. Enter your info to continue.', 'info');
     setTimeout(() => document.getElementById('voter-name-input')?.focus(), 50);
   };
 
@@ -1094,7 +1278,7 @@ function App() {
     return (eventData.restaurants || [])
       .map((rest) => {
         const voters = participants
-          .filter((p) => !p.cantMakeIt && Array.isArray(p.restaurantVotes) && p.restaurantVotes.includes(rest.id))
+          .filter((p) => (!p.cantMakeIt || isRestaurantPollClosed) && Array.isArray(p.restaurantVotes) && p.restaurantVotes.includes(rest.id))
           .map((p) => p.name);
         return {
           ...rest,
@@ -1103,7 +1287,7 @@ function App() {
         };
       })
       .sort((a, b) => b.voteCount - a.voteCount);
-  }, [eventData.restaurants, participants]);
+  }, [eventData.restaurants, participants, isRestaurantPollClosed]);
 
   const topRestaurantVoteCount = restaurantStats.length > 0 ? restaurantStats[0].voteCount : 0;
   const winningRestaurants = useMemo(() => {
@@ -1326,7 +1510,7 @@ function App() {
         rating: place.rating,
         userRatingCount: place.userRatingCount,
         note: newRestaurantNote.trim(),
-        suggestedBy: normalizedVoterName || 'Cartus and Alumni Member',
+        suggestedBy: activeParticipant?.name || normalizedVoterName || 'Cartus and Alumni Member',
       };
       const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
       await updateDoc(roomDocRef, {
@@ -1856,12 +2040,12 @@ function App() {
         {(() => {
           const cantMakeItPeople = participants.filter((p) => p.cantMakeIt);
           const totalPeople = participants.length - cantMakeItPeople.length;
-          const leadingDates = topDates.filter((d) => d.yesCount > 0).slice(0, 3);
+          const leadingDates = showFullResults ? topDates : topDates.filter((d) => d.yesCount > 0).slice(0, 3);
           const restaurantVoterCount = participants.filter((p) => (p.restaurantVotes || []).length > 0).length;
-          const leadingRestaurants = restaurantStats.filter((r) => r.voteCount > 0).slice(0, 3);
+          const leadingRestaurants = showFullResults ? restaurantStats : restaurantStats.filter((r) => r.voteCount > 0).slice(0, 3);
           const pct = (n, total) => (total > 0 ? Math.round((n / total) * 100) : 0);
           return (
-            <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+            <section id="poll-results" className="scroll-mt-4 bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <div className="flex items-center gap-2">
                   <Trophy className="w-5 h-5 text-amber-500" />
@@ -1953,6 +2137,16 @@ function App() {
                   <span className="font-bold text-rose-700">Can't make it ({cantMakeItPeople.length}):</span>{' '}
                   {cantMakeItPeople.map((p) => p.name).join(', ')}
                 </p>
+              )}
+              {(topDates.length > 3 || restaurantStats.length > 3 || topDates.some((d) => d.yesCount === 0)) && (
+                <button
+                  type="button"
+                  onClick={() => setShowFullResults((v) => !v)}
+                  className="mt-4 inline-flex items-center gap-1.5 text-xs font-bold text-[#005EB8] hover:underline touch-manipulation"
+                >
+                  {showFullResults ? 'Show top 3 only' : 'See full results'}
+                  <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showFullResults ? 'rotate-180' : ''}`} />
+                </button>
               )}
             </section>
           );
@@ -2200,6 +2394,122 @@ function App() {
           </section>
         )}
 
+        {/* YOUR RSVP (returning visitor once the final date is locked) */}
+        {lockedDateObj && activeParticipant && (() => {
+          const myVote = activeParticipant.votes?.[lockedDateObj.id];
+          const going = !activeParticipant.cantMakeIt && (myVote === 'yes' || myVote === 'maybe');
+          const f = formatDateParts(lockedDateObj.dateStr);
+          const scrollTo = (id) => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return (
+            <section
+              id="your-rsvp"
+              className={`rounded-2xl sm:rounded-3xl bg-white shadow-md p-4 sm:p-6 border-2 ${going ? 'border-emerald-400' : 'border-amber-300'}`}
+            >
+              <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Your RSVP · {activeParticipant.name}</p>
+              <h2 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A] mt-0.5">
+                {going ? "You're coming! 🎉" : activeParticipant.cantMakeIt ? "You've said you can't make it" : "You haven't RSVP'd for the final date"}
+              </h2>
+
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-[#005EB8] flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Date</p>
+                  <p className="text-sm font-bold text-slate-800 mt-1">{f.full}</p>
+                  <p className="text-xs text-slate-600">{lockedDateObj.timeLabel}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-[#005EB8] flex items-center gap-1"><Utensils className="w-3.5 h-3.5" /> Restaurant</p>
+                  <p className="text-sm font-bold text-slate-800 mt-1">{finalRestaurant ? finalRestaurant.name : 'To be announced'}</p>
+                  {finalRestaurant?.address && <p className="text-xs text-slate-600">{finalRestaurant.address}</p>}
+                  {finalRestaurant?.mapsUrl && (
+                    <a href={finalRestaurant.mapsUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#005EB8] hover:underline">
+                      <MapPin className="w-3 h-3" /> Open in Google Maps
+                    </a>
+                  )}
+                </div>
+              </div>
+
+              {showCancelRsvp ? (
+                <div className="mt-3 space-y-2.5 px-3.5 py-3 rounded-xl bg-rose-50 border border-rose-200">
+                  <label htmlFor="cancel-rsvp-reason" className="block text-sm font-bold text-rose-900">
+                    Cancel your RSVP? Want to share why? <span className="font-normal text-rose-700">(optional)</span>
+                  </label>
+                  <textarea
+                    id="cancel-rsvp-reason"
+                    rows={2}
+                    maxLength={300}
+                    value={cantMakeItReason}
+                    onChange={(e) => setCantMakeItReason(e.target.value)}
+                    placeholder="e.g., Something came up"
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-rose-200 bg-white focus:border-rose-400 text-base outline-none resize-none"
+                  />
+                  <p className="text-[11px] text-rose-800">Only the organizer sees your reason.</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await handleMarkCantMakeIt();
+                        setShowCancelRsvp(false);
+                      }}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold touch-manipulation"
+                    >
+                      Yes, cancel my RSVP
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowCancelRsvp(false);
+                        setCantMakeItReason('');
+                      }}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-white border border-rose-200 text-sm font-semibold text-rose-800 hover:bg-rose-100 touch-manipulation"
+                    >
+                      Keep my RSVP
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-col sm:flex-row sm:flex-wrap gap-2">
+                  {going ? (
+                    <button
+                      type="button"
+                      onClick={() => scrollTo('add-to-calendar')}
+                      className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-[#005EB8] hover:bg-[#004a93] text-white text-sm font-bold touch-manipulation"
+                    >
+                      <CalendarPlus className="w-4 h-4" /> Add to calendar
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleToggleDate(lockedDateObj.id)}
+                      className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold touch-manipulation"
+                    >
+                      <CheckCircle2 className="w-4 h-4" /> {activeParticipant.cantMakeIt ? 'I can make it after all' : 'Count me in'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowFullResults(true);
+                      setTimeout(() => scrollTo('poll-results'), 50);
+                    }}
+                    className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-sm font-semibold touch-manipulation"
+                  >
+                    <Trophy className="w-4 h-4 text-amber-500" /> See how the poll went
+                  </button>
+                  {going && (
+                    <button
+                      type="button"
+                      onClick={() => setShowCancelRsvp(true)}
+                      className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 text-sm font-semibold touch-manipulation"
+                    >
+                      <X className="w-4 h-4" /> Cancel my RSVP
+                    </button>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })()}
+
         {/* ADD TO CALENDAR (shown to everyone once the final date is locked) */}
         {lockedDateObj && calendarEvent && (
           <section id="add-to-calendar" className="scroll-mt-4 bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
@@ -2328,7 +2638,7 @@ function App() {
                   onClick={handleSwitchPerson}
                   className="inline-flex items-center justify-center min-h-[40px] px-3 py-2 rounded-xl text-slate-500 text-xs font-semibold hover:bg-slate-100 touch-manipulation"
                 >
-                  Not you?
+                  Not Me?
                 </button>
               </div>
             </div>
@@ -2450,16 +2760,22 @@ function App() {
               <p className="text-[11px] text-slate-500 px-1">
                 Only the organizer sees your phone and email. They are not shown on this page.
               </p>
-              {identityIssue && normalizedVoterName && (
-                <p className="text-xs text-amber-800 px-1">{identityIssue}</p>
+              {nameTaken && (
+                <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-2.5 py-2">
+                  {nameTaken.name} is already in the poll. If that's you, enter the phone or email you used before to get back to your choices.
+                </p>
+              )}
+              {formIssue && (
+                <p className="text-xs text-amber-800 px-1">{formIssue}</p>
               )}
               <button
+                id="voter-submit-button"
                 type="button"
                 onClick={handleSubmitProfile}
                 disabled={isSavingProfile}
                 className="w-full inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-3 rounded-xl bg-[#005EB8] hover:bg-[#004a93] disabled:opacity-60 text-white text-base font-bold shadow-sm touch-manipulation"
               >
-                <Check className="w-5 h-5" /> {isSavingProfile ? 'Saving…' : 'Submit'}
+                <Check className="w-5 h-5" /> {isSavingProfile ? 'Saving…' : nameTaken ? 'Find my RSVP' : 'Submit'}
               </button>
             </div>
           )}
@@ -2469,12 +2785,12 @@ function App() {
             <div className="mt-3.5 pt-3 border-t border-slate-100 flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
               <span className="text-[11px] font-semibold text-slate-400 shrink-0">Already in:</span>
               {participants.map((p) => {
-                const isSelectedUser = p.name.toLowerCase() === normalizedVoterName.toLowerCase();
+                const isSelectedUser = activeParticipant?.id === p.id;
                 return (
                   <button
                     key={p.id}
                     type="button"
-                    onClick={() => setVoterName(p.name)}
+                    onClick={() => handlePickRosterName(p)}
                     className={`inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold transition-all border shrink-0 touch-manipulation ${
                       isSelectedUser
                         ? 'bg-[#005EB8] text-white border-[#005EB8] shadow-sm'
@@ -3166,7 +3482,7 @@ function App() {
                   Cartus and Alumni RSVP Roster ({participants.length})
                 </h3>
               </div>
-              <span className="text-xs text-slate-400 hidden sm:inline">Tap any name to edit their picks</span>
+              <span className="text-xs text-slate-400 hidden sm:inline">Tap your name to sign back in</span>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
@@ -3180,7 +3496,7 @@ function App() {
                     className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200/80"
                   >
                     <div
-                      onClick={() => setVoterName(p.name)}
+                      onClick={() => handlePickRosterName(p)}
                       className="flex items-center gap-2.5 min-w-0 cursor-pointer"
                     >
                       <span
@@ -3269,7 +3585,10 @@ function App() {
             {identityReady ? (
               <div className="truncate">
                 <span className="text-xs font-extrabold text-[#0B1F3A] block truncate">
-                  {normalizedVoterName}
+                  {activeParticipant?.name}{' '}
+                  <button type="button" onClick={handleSwitchPerson} className="ml-1 text-[10px] font-semibold text-slate-400 underline">
+                    Not Me?
+                  </button>
                 </span>
                 <span className="text-[11px] text-[#005EB8] font-semibold">
                   {activeParticipant?.cantMakeIt
@@ -3289,7 +3608,7 @@ function App() {
                 }}
                 className="text-xs font-bold text-[#005EB8] underline underline-offset-2 text-left"
               >
-                Tap to enter your name &amp; phone
+                Tap to enter your info
               </button>
             )}
           </div>
