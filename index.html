@@ -109,6 +109,12 @@
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
     // 3. App code
+// Vote saves replace these fields whole. A plain merge never removes a key from the
+// `votes` map, so un-picking a date (or "can't make it") would silently keep old picks.
+const VOTE_WRITE_OPTIONS = {
+  mergeFields: ['name', 'votes', 'restaurantVotes', 'cantMakeIt', 'rsvpAfterRestaurantClose', 'updatedAtMs'],
+};
+
 // The original poll (no ?room= in the link)
 const DEFAULT_ROOM_ID = 'cartus-it-2026';
 
@@ -1861,7 +1867,7 @@ function App() {
           rsvpAfterRestaurantClose: activeParticipant ? Boolean(activeParticipant.rsvpAfterRestaurantClose) : false,
           updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
         },
-        { merge: true }
+        VOTE_WRITE_OPTIONS
       );
     } catch (err) {
       console.error("Error saving can't-make-it:", err);
@@ -2296,7 +2302,7 @@ function App() {
             : isLateRsvp,
           updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
         },
-        { merge: true }
+        VOTE_WRITE_OPTIONS
       );
     } catch (err) {
       console.error('Error saving date vote:', err);
@@ -2377,7 +2383,7 @@ function App() {
         rsvpAfterRestaurantClose: false,
         updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
       },
-      { merge: true }
+      VOTE_WRITE_OPTIONS
     );
   };
 
@@ -2512,7 +2518,7 @@ function App() {
           rsvpAfterRestaurantClose: false,
           updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
         },
-        { merge: true }
+        VOTE_WRITE_OPTIONS
       );
     } catch (err) {
       console.error('Error voting on restaurant:', err);
