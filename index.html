@@ -441,6 +441,12 @@ const phoneDigitsOf = (input) => input.replace(/\D/g, '').replace(/^1/, '').slic
 const isValidUSPhone = (input) => /^[2-9]\d{9}$/.test(phoneDigitsOf(input));
 
 // Progressive (555) 123-4567 formatting while typing
+// Email is optional: blank is fine, otherwise it must look like name@domain.tld
+const isValidEmail = (email) => {
+  const e = (email || '').trim();
+  return e === '' || /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e);
+};
+
 const formatUSPhone = (input) => {
   const d = phoneDigitsOf(input);
   if (d.length === 0) return '';
@@ -525,6 +531,26 @@ function App() {
       return '';
     }
   });
+  const [voterEmail, setVoterEmail] = useState(() => {
+    try {
+      return localStorage.getItem('cartus_it_voter_email_2026') || '';
+    } catch {
+      return '';
+    }
+  });
+  // Which roster entry this device submitted (lets it edit that person's details later)
+  const [savedProfileKey, setSavedProfileKey] = useState(() => {
+    try {
+      return localStorage.getItem('cartus_it_saved_profile_2026') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [draftName, setDraftName] = useState('');
+  const [draftPhone, setDraftPhone] = useState('');
+  const [draftEmail, setDraftEmail] = useState('');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [selectedWeekFilter, setSelectedWeekFilter] = useState('all');
 
   // Restaurant Suggestion Inputs
@@ -584,6 +610,15 @@ function App() {
       // Ignore storage restrictions
     }
   }, [voterPhone]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('cartus_it_voter_email_2026', voterEmail);
+      localStorage.setItem('cartus_it_saved_profile_2026', savedProfileKey);
+    } catch {
+      // Ignore storage restrictions
+    }
+  }, [voterEmail, savedProfileKey]);
 
   // 1. Authenticate Anonymously with Firebase on Mount
   useEffect(() => {
@@ -776,20 +811,23 @@ function App() {
   // in the poll (returning on another device, or picked from "Already in") don't re-enter a phone.
   const nameIsValid = isValidFullName(normalizedVoterName);
   const phoneIsValid = isValidUSPhone(voterPhone);
-  const identityReady = nameIsValid && (Boolean(activeParticipant) || phoneIsValid);
+  const emailIsValid = isValidEmail(voterEmail);
+  const identityReady = nameIsValid && (Boolean(activeParticipant) || (phoneIsValid && emailIsValid));
   const identityIssue = !normalizedVoterName
     ? 'Enter your first and last name to tap dates'
     : !nameIsValid
     ? 'Please enter your first AND last name'
-    : !identityReady
+    : !activeParticipant && !phoneIsValid
     ? 'Enter your phone number with area code'
+    : !identityReady
+    ? 'Check your email address (or leave it blank)'
     : '';
 
   // Returns true when the user can participate; otherwise explains what's missing.
   const requireIdentity = () => {
     if (identityReady) return true;
     triggerToast(identityIssue + ' in Step 1.', 'error');
-    const el = document.getElementById(nameIsValid ? 'voter-phone-input' : 'voter-name-input');
+    const el = document.getElementById(!nameIsValid ? 'voter-name-input' : !phoneIsValid ? 'voter-phone-input' : 'voter-email-input');
     if (el) {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       el.focus();
@@ -859,25 +897,118 @@ function App() {
 
   // Phone numbers go to a separate write-only collection (not readable from the page),
   // so only the organizer can see them in the Firebase console.
+  const writeContact = (docKey, { name, phone, email }) => {
+    const digits = phoneDigitsOf(phone);
+    return setDoc(
+      doc(db, 'artifacts', appId, 'private_contacts', `${roomId}__${docKey}`),
+      {
+        name,
+        phone: '+1' + digits,
+        phoneDisplay: formatUSPhone(digits),
+        email: (email || '').trim().toLowerCase(),
+        roomId,
+        uid: user.uid,
+        updatedAtMs: Date.now(),
+      },
+      { merge: true }
+    );
+  };
+
+  // First vote without pressing Submit: save the contact implicitly.
   const saveContact = async (docKey) => {
     if (activeParticipant || !user) return;
-    const digits = phoneDigitsOf(voterPhone);
     try {
-      await setDoc(
-        doc(db, 'artifacts', appId, 'private_contacts', `${roomId}__${docKey}`),
-        {
-          name: normalizedVoterName,
-          phone: '+1' + digits,
-          phoneDisplay: formatUSPhone(digits),
-          roomId,
-          uid: user.uid,
-          createdAtMs: Date.now(),
-        },
-        { merge: true }
-      );
+      await writeContact(docKey, { name: normalizedVoterName, phone: voterPhone, email: voterEmail });
+      setSavedProfileKey(docKey);
     } catch (err) {
       console.error('Error saving contact:', err);
     }
+  };
+
+  // Step 1 "Submit": add this person to the roster and save their private contact details.
+  const handleSubmitProfile = async () => {
+    if (!requireIdentity() || !user || isSavingProfile) return;
+    const docKey = toDocKey(normalizedVoterName);
+    setIsSavingProfile(true);
+    try {
+      await writeContact(docKey, { name: normalizedVoterName, phone: voterPhone, email: voterEmail });
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey),
+        { name: normalizedVoterName, updatedAtMs: Date.now() },
+        { merge: true }
+      );
+      setSavedProfileKey(docKey);
+      triggerToast("You're in! Now tap the dates that work for you.");
+    } catch (err) {
+      console.error('Error submitting info:', err);
+      triggerToast('Could not save your info. Please try again.', 'error');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const startEditProfile = () => {
+    setDraftName(activeParticipant ? activeParticipant.name : normalizedVoterName);
+    setDraftPhone(voterPhone);
+    setDraftEmail(voterEmail);
+    setEditingProfile(true);
+  };
+
+  const draftNameNormalized = draftName.trim().replace(/\s+/g, ' ');
+  const draftIssue = !isValidFullName(draftNameNormalized)
+    ? 'Please enter your first AND last name'
+    : !isValidUSPhone(draftPhone)
+    ? 'Enter your phone number with area code'
+    : !isValidEmail(draftEmail)
+    ? 'Check your email address (or leave it blank)'
+    : participants.some((p) => p.id !== activeParticipant?.id && p.name.toLowerCase() === draftNameNormalized.toLowerCase())
+    ? 'Someone in the poll already has that name'
+    : '';
+
+  const handleSaveProfileEdit = async () => {
+    if (!activeParticipant || !user || isSavingProfile) return;
+    if (draftIssue) {
+      triggerToast(draftIssue + '.', 'error');
+      return;
+    }
+    const docKey = activeParticipant.id;
+    setIsSavingProfile(true);
+    try {
+      await writeContact(docKey, { name: draftNameNormalized, phone: draftPhone, email: draftEmail });
+    } catch (err) {
+      console.error('Error updating contact:', err);
+      triggerToast('For privacy, phone and email can only be changed on the device first used. Ask the organizer to update them.', 'error');
+      setIsSavingProfile(false);
+      return;
+    }
+    try {
+      if (draftNameNormalized !== activeParticipant.name) {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey), {
+          name: draftNameNormalized,
+          updatedAtMs: Date.now(),
+        });
+      }
+      setVoterName(draftNameNormalized);
+      setVoterPhone(formatUSPhone(phoneDigitsOf(draftPhone)));
+      setVoterEmail(draftEmail.trim());
+      setSavedProfileKey(docKey);
+      setEditingProfile(false);
+      triggerToast('Your info is updated.');
+    } catch (err) {
+      console.error('Error renaming participant:', err);
+      triggerToast('Could not update your name. Please try again.', 'error');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handleSwitchPerson = () => {
+    setEditingProfile(false);
+    setVoterName('');
+    setVoterPhone('');
+    setVoterEmail('');
+    setSavedProfileKey('');
+    setTimeout(() => document.getElementById('voter-name-input')?.focus(), 50);
   };
 
   const isDeadlinePassed = nowMs >= RESTAURANT_DEADLINE_MS;
@@ -1557,6 +1688,7 @@ function App() {
         name: p.name,
         phone: contact?.phone || '',
         phoneDisplay: contact?.phoneDisplay || '',
+        email: contact?.email || '',
         cantMakeIt: p.cantMakeIt,
         attendingFinal,
         status,
@@ -1590,14 +1722,28 @@ function App() {
       : `sms:${numbers.join(',')}?body=${body}`;
   };
 
+  const handleCopyEmails = () => {
+    const pool = dashboardRows.filter((r) => {
+      if (textAudience === 'everyone') return true;
+      if (textAudience === 'responded') return !r.cantMakeIt;
+      return eventData.lockedDateId ? r.attendingFinal : !r.cantMakeIt;
+    });
+    const emails = pool.map((r) => r.email).filter(Boolean);
+    if (emails.length === 0) {
+      triggerToast('No emails on file for that group yet.', 'info');
+      return;
+    }
+    copyToClipboard(emails.join('; '), 'emails');
+  };
+
   const handleCopyNumbers = () => {
     copyToClipboard(textRecipients.withPhone.map((r) => r.phone).join(', '), 'numbers');
   };
 
   const handleExportCsv = () => {
     const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const header = ['Name', 'Phone', 'Status', 'Dates available', 'Restaurant votes', "Can't make it reason"];
-    const lines = [header, ...dashboardRows.map((r) => [r.name, r.phoneDisplay || r.phone, r.status, r.dates, r.restaurants, r.reason])]
+    const header = ['Name', 'Phone', 'Email', 'Status', 'Dates available', 'Restaurant votes', "Can't make it reason"];
+    const lines = [header, ...dashboardRows.map((r) => [r.name, r.phoneDisplay || r.phone, r.email, r.status, r.dates, r.restaurants, r.reason])]
       .map((row) => row.map(cell).join(','));
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -1896,6 +2042,13 @@ function App() {
                     >
                       {copiedType === 'numbers' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />} Copy numbers
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleCopyEmails}
+                      className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-sm font-semibold touch-manipulation"
+                    >
+                      {copiedType === 'emails' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />} Copy emails
+                    </button>
                     {lockedDateObj && (
                       <button
                         type="button"
@@ -1939,6 +2092,9 @@ function App() {
                       <p className={`text-[11px] ${r.cantMakeIt ? 'text-rose-700' : r.attendingFinal ? 'text-emerald-700' : 'text-slate-500'}`}>
                         {r.status}{r.dates && !r.cantMakeIt ? ` · ${r.dates}` : ''}
                       </p>
+                      {r.email && (
+                        <a href={`mailto:${r.email}`} className="block text-[11px] text-[#005EB8] hover:underline truncate">{r.email}</a>
+                      )}
                       {r.reason && <p className="text-[11px] text-slate-500 italic">“{r.reason}”</p>}
                     </div>
                   ))}
@@ -2100,13 +2256,114 @@ function App() {
               1
             </span>
             <div>
-              <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">Enter Your Name &amp; Phone</h2>
-              <p className="text-xs text-slate-500">First and last name plus a phone number with area code, then tap any date(s) that work for you.</p>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">Enter Your Info</h2>
+              <p className="text-xs text-slate-500">First and last name, phone with area code, and email if you like. Submit, then tap any date(s) that work for you.</p>
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-start">
-            <div className="flex-1 space-y-2.5">
+          {activeParticipant && !editingProfile ? (
+            /* Submitted: summary card with Edit */
+            <div className="rounded-xl bg-sky-50 border border-sky-200 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${getAvatarColor(activeParticipant.name)}`}>
+                  {getInitials(activeParticipant.name)}
+                </span>
+                <div className="min-w-0">
+                  <p className="font-extrabold text-[#0B1F3A] truncate flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    {activeParticipant.name}
+                  </p>
+                  <p className="text-xs text-slate-600 truncate">
+                    {savedProfileKey === activeParticipant.id && voterPhone ? voterPhone : 'Phone on file'}
+                    {savedProfileKey === activeParticipant.id && voterEmail ? ` · ${voterEmail}` : ''}
+                    {' · '}
+                    <span className="font-semibold text-[#005EB8]">{activeUserYesCount} {activeUserYesCount === 1 ? 'date' : 'dates'} picked</span>
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={startEditProfile}
+                  className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-xl bg-white border border-sky-300 text-[#005EB8] text-xs font-bold hover:bg-sky-100 touch-manipulation"
+                >
+                  Edit my info
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSwitchPerson}
+                  className="inline-flex items-center justify-center min-h-[40px] px-3 py-2 rounded-xl text-slate-500 text-xs font-semibold hover:bg-slate-100 touch-manipulation"
+                >
+                  Not you?
+                </button>
+              </div>
+            </div>
+          ) : editingProfile && activeParticipant ? (
+            /* Editing after submission */
+            <div className="rounded-xl border-2 border-[#005EB8]/40 bg-white p-3.5 space-y-2.5">
+              <p className="text-sm font-extrabold text-[#0B1F3A]">Edit your info</p>
+              <div className="relative">
+                <UserPlus className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  autoComplete="name"
+                  autoCapitalize="words"
+                  aria-label="First and last name"
+                  value={draftName}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  placeholder="First and last name"
+                  className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all border-slate-200`}
+                />
+              </div>
+              <div className="relative">
+                <span className="text-slate-400 text-sm absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true">📞</span>
+                <input
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel-national"
+                  aria-label="Phone number with area code"
+                  value={draftPhone}
+                  onChange={(e) => setDraftPhone(formatUSPhone(e.target.value))}
+                  placeholder="Phone with area code, e.g. (555) 123-4567"
+                  className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all border-slate-200`}
+                />
+              </div>
+              <div className="relative">
+                <span className="text-slate-400 text-sm absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true">✉️</span>
+                <input
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  aria-label="Email (optional)"
+                  value={draftEmail}
+                  onChange={(e) => setDraftEmail(e.target.value)}
+                  placeholder="Email (optional)"
+                  className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all border-slate-200`}
+                />
+              </div>
+              {draftIssue && <p className="text-xs text-amber-800 px-1">{draftIssue}</p>}
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveProfileEdit}
+                  disabled={Boolean(draftIssue) || isSavingProfile}
+                  className="flex-1 inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-2.5 rounded-xl bg-[#005EB8] hover:bg-[#004a93] disabled:opacity-50 text-white text-sm font-bold touch-manipulation"
+                >
+                  <Check className="w-4 h-4" /> {isSavingProfile ? 'Saving…' : 'Save changes'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingProfile(false)}
+                  className="inline-flex items-center justify-center min-h-[48px] px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-100 touch-manipulation"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* New person: name, phone, optional email, then Submit */
+            <div className="space-y-2.5">
               <div className="relative">
                 <UserPlus className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
@@ -2120,75 +2377,58 @@ function App() {
                   value={voterName}
                   onChange={(e) => setVoterName(e.target.value)}
                   placeholder="First and last name"
-                  className={`w-full min-h-[48px] pl-10 pr-10 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all ${
-                    normalizedVoterName && !nameIsValid ? 'border-amber-300' : 'border-slate-200'
-                  }`}
+                  className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all ${normalizedVoterName && !nameIsValid ? 'border-amber-300' : 'border-slate-200'}`}
                 />
-                {voterName && (
-                  <button
-                    type="button"
-                    onClick={() => setVoterName('')}
-                    aria-label="Clear name"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 touch-manipulation"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
               </div>
-
-              {activeParticipant ? (
-                <p className="text-xs text-emerald-700 font-medium px-1">
-                  Welcome back, you're already in the poll. No need to re-enter your phone.
-                </p>
-              ) : (
-                <div>
-                  <div className="relative">
-                    <span className="text-slate-400 text-sm absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true">📞</span>
-                    <input
-                      id="voter-phone-input"
-                      type="tel"
-                      inputMode="tel"
-                      autoComplete="tel-national"
-                      enterKeyHint="done"
-                      required
-                      aria-label="Phone number with area code"
-                      value={voterPhone}
-                      onChange={(e) => setVoterPhone(formatUSPhone(e.target.value))}
-                      placeholder="Phone with area code, e.g. (555) 123-4567"
-                      className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all ${
-                        voterPhone && !phoneIsValid ? 'border-amber-300' : 'border-slate-200'
-                      }`}
-                    />
-                  </div>
-                  <p className="mt-1 text-[11px] text-slate-500 px-1">
-                    Only the organizer sees your phone number. It is not shown on this page.
-                  </p>
-                </div>
+              <div className="relative">
+                <span className="text-slate-400 text-sm absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true">📞</span>
+                <input
+                  id="voter-phone-input"
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel-national"
+                  enterKeyHint="next"
+                  required
+                  aria-label="Phone number with area code"
+                  value={voterPhone}
+                  onChange={(e) => setVoterPhone(formatUSPhone(e.target.value))}
+                  placeholder="Phone with area code, e.g. (555) 123-4567"
+                  className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all ${voterPhone && !phoneIsValid ? 'border-amber-300' : 'border-slate-200'}`}
+                />
+              </div>
+              <div className="relative">
+                <span className="text-slate-400 text-sm absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden="true">✉️</span>
+                <input
+                  id="voter-email-input"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  enterKeyHint="done"
+                  aria-label="Email (optional)"
+                  value={voterEmail}
+                  onChange={(e) => setVoterEmail(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleSubmitProfile(); }}
+                  placeholder="Email (optional)"
+                  className={`w-full min-h-[48px] pl-10 pr-3 py-3 rounded-xl border-2 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all ${voterEmail && !emailIsValid ? 'border-amber-300' : 'border-slate-200'}`}
+                />
+              </div>
+              <p className="text-[11px] text-slate-500 px-1">
+                Only the organizer sees your phone and email. They are not shown on this page.
+              </p>
+              {identityIssue && normalizedVoterName && (
+                <p className="text-xs text-amber-800 px-1">{identityIssue}</p>
               )}
+              <button
+                type="button"
+                onClick={handleSubmitProfile}
+                disabled={isSavingProfile}
+                className="w-full inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-3 rounded-xl bg-[#005EB8] hover:bg-[#004a93] disabled:opacity-60 text-white text-base font-bold shadow-sm touch-manipulation"
+              >
+                <Check className="w-5 h-5" /> {isSavingProfile ? 'Saving…' : 'Submit'}
+              </button>
             </div>
-
-            {identityReady ? (
-              <div className="flex items-center justify-between sm:justify-start gap-2.5 px-3.5 py-2.5 rounded-xl bg-sky-50 border border-sky-200 text-xs sm:text-sm">
-                <div className="flex items-center gap-2 min-w-0">
-                  <span
-                    className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${getAvatarColor(
-                      normalizedVoterName
-                    )}`}
-                  >
-                    {getInitials(normalizedVoterName)}
-                  </span>
-                  <span className="font-bold text-[#0B1F3A] truncate">{normalizedVoterName}</span>
-                </div>
-                <span className="text-[#005EB8] font-bold shrink-0 bg-white px-2.5 py-1 rounded-lg border border-sky-200">
-                  {activeUserYesCount} {activeUserYesCount === 1 ? 'date' : 'dates'}
-                </span>
-              </div>
-            ) : (
-              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-3.5 py-3 rounded-xl font-medium">
-                👈 {identityIssue}
-              </div>
-            )}
-          </div>
+          )}
 
           {/* Quick-Switch Existing Teammate Pills */}
           {participants.length > 0 && (
