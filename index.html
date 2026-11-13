@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Holiday Lunch 2026 - Pre AI Takeover</title>
+  <title>Holiday Lunch 2026</title>
   <meta name="theme-color" content="#0b2e22">
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -31,6 +31,9 @@
       background-size: 200px 200px;
     }
     html.xmas-animated #xmas-bg::after { display: none; }
+    @keyframes ornament-swing { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(5deg); } }
+    .ornament-swing { transform-origin: 50% 0; animation: ornament-swing 3.2s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) { .ornament-swing { animation: none; } }
     #xmas-snow { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
   </style>
 </head>
@@ -484,6 +487,88 @@ const formatUSPhone = (input) => {
   return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
 };
 
+// ---------- Holiday banner artwork (inline SVG, no image files) ----------
+const WREATH_LEAVES = Array.from({ length: 40 }, (_, i) => {
+  const a = (i / 40) * Math.PI * 2;
+  const r = i % 2 === 0 ? 76 : 86;
+  return {
+    x: 100 + Math.cos(a) * r,
+    y: 100 + Math.sin(a) * r,
+    rot: (a * 180) / Math.PI + 90 + (i % 3 === 0 ? 20 : -15),
+    fill: ['#14532d', '#166534', '#15803d', '#1d6b3a'][i % 4],
+  };
+});
+const WREATH_BERRIES = [20, 65, 110, 155, 200, 245, 290, 335].map((deg) => {
+  const a = (deg * Math.PI) / 180;
+  return { x: 100 + Math.cos(a) * 81, y: 100 + Math.sin(a) * 81 };
+});
+
+const HolidayWreathSanta = ({ className = '' }) => (
+  <svg viewBox="0 0 200 200" className={className} role="img" aria-label="Holiday wreath with Santa">
+    <circle cx="100" cy="100" r="66" fill="#facc15" opacity="0.14" />
+    {WREATH_LEAVES.map((l, i) => (
+      <ellipse key={i} cx={l.x} cy={l.y} rx="17" ry="7.5" fill={l.fill} transform={`rotate(${l.rot} ${l.x} ${l.y})`} />
+    ))}
+    {WREATH_BERRIES.map((b, i) => (
+      <g key={i}>
+        <circle cx={b.x} cy={b.y} r="5" fill="#dc2626" />
+        <circle cx={b.x - 1.5} cy={b.y - 1.5} r="1.6" fill="#fff" opacity="0.7" />
+      </g>
+    ))}
+    {/* Santa */}
+    <path d="M72 92 C 76 62, 98 46, 124 44 C 140 43, 150 52, 152 66 C 140 58, 130 60, 126 68 C 128 76, 129 84, 128 92 Z" fill="#dc2626" />
+    <circle cx="152" cy="68" r="8" fill="#fff" />
+    <circle cx="100" cy="110" r="22" fill="#f9cfa9" />
+    <rect x="66" y="86" width="68" height="14" rx="7" fill="#fff" />
+    <circle cx="86" cy="115" r="4.5" fill="#f87171" opacity="0.55" />
+    <circle cx="114" cy="115" r="4.5" fill="#f87171" opacity="0.55" />
+    <rect x="87" y="101" width="9" height="3" rx="1.5" fill="#fff" />
+    <rect x="104" y="101" width="9" height="3" rx="1.5" fill="#fff" />
+    <circle cx="92" cy="107" r="2.6" fill="#1f2937" />
+    <circle cx="108" cy="107" r="2.6" fill="#1f2937" />
+    <path d="M76 112 C 74 133, 86 151, 100 153 C 114 151, 126 133, 124 112 C 118 122, 110 125, 100 125 C 90 125, 82 122, 76 112 Z" fill="#fff" />
+    <ellipse cx="93.5" cy="120" rx="8.5" ry="4.5" fill="#f1f5f9" />
+    <ellipse cx="106.5" cy="120" rx="8.5" ry="4.5" fill="#f1f5f9" />
+    <circle cx="100" cy="114" r="3.8" fill="#f4a07a" />
+    <path d="M95 127 Q 100 131 105 127" stroke="#b91c1c" strokeWidth="2" fill="none" strokeLinecap="round" />
+    {/* Bow */}
+    <path d="M100 176 C 84 164, 72 170, 74 180 C 76 190, 90 186, 100 178 Z" fill="#b91c1c" />
+    <path d="M100 176 C 116 164, 128 170, 126 180 C 124 190, 110 186, 100 178 Z" fill="#b91c1c" />
+    <path d="M97 180 L 88 198 L 95 195 L 99 199 Z" fill="#991b1b" />
+    <path d="M103 180 L 112 198 L 105 195 L 101 199 Z" fill="#991b1b" />
+    <circle cx="100" cy="178" r="5.5" fill="#dc2626" />
+  </svg>
+);
+
+const HANGING_ORNAMENTS = [
+  { left: '5%', len: 14, color: '#facc15', delay: '0s', size: 9 },
+  { left: '15%', len: 30, color: '#22c55e', delay: '-0.8s', size: 11 },
+  { left: '26%', len: 8, color: '#e2e8f0', delay: '-1.6s', size: 8 },
+  { left: '37%', len: 24, color: '#38bdf8', delay: '-0.4s', size: 10 },
+  { left: '49%', len: 12, color: '#facc15', delay: '-2.2s', size: 9 },
+  { left: '60%', len: 28, color: '#22c55e', delay: '-1.2s', size: 10, wide: true },
+  { left: '70%', len: 10, color: '#e2e8f0', delay: '-2.8s', size: 8, wide: true },
+];
+
+const HangingOrnaments = () => (
+  <div className="absolute inset-x-0 top-0 h-16 pointer-events-none" aria-hidden="true">
+    {HANGING_ORNAMENTS.map((o, i) => (
+      <svg
+        key={i}
+        width="24"
+        height={o.len + o.size * 2 + 8}
+        className={`absolute top-0 ornament-swing ${o.wide ? 'hidden sm:block' : ''}`}
+        style={{ left: o.left, animationDelay: o.delay }}
+      >
+        <line x1="12" y1="0" x2="12" y2={o.len} stroke="#fde68a" strokeOpacity="0.7" strokeWidth="1" />
+        <rect x="8.5" y={o.len} width="7" height="5" rx="1" fill="#d4a017" />
+        <circle cx="12" cy={o.len + 5 + o.size} r={o.size} fill={o.color} />
+        <ellipse cx={12 - o.size / 3} cy={o.len + 5 + o.size * 0.65} rx={o.size / 3} ry={o.size / 4.5} fill="#fff" opacity="0.6" />
+      </svg>
+    ))}
+  </div>
+);
+
 const CartusITEmblem = () => (
   <svg viewBox="0 0 64 64" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <rect width="64" height="64" rx="16" fill="url(#cartusGrad)" />
@@ -531,7 +616,7 @@ function App() {
 
   // Event Metadata State (Synced in real time with Firebase Firestore)
   const [eventData, setEventData] = useState({
-    title: 'Holiday Lunch 2026 - Pre AI Takeover',
+    title: 'Holiday Lunch 2026',
     targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
     location: 'TBD — Vote on Restaurant Suggestions Below!',
     notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
@@ -624,7 +709,7 @@ function App() {
   const [showNewPollModal, setShowNewPollModal] = useState(false);
   const [newDateStr, setNewDateStr] = useState('2026-12-10');
   const [newTimeLabel, setNewTimeLabel] = useState('12:00 PM');
-  const [newPollTitle, setNewPollTitle] = useState('Holiday Lunch 2026 - Pre AI Takeover');
+  const [newPollTitle, setNewPollTitle] = useState('Holiday Lunch 2026');
   const [newPollLocation, setNewPollLocation] = useState('');
   const [shareUrlInput, setShareUrlInput] = useState('');
   const [copiedType, setCopiedType] = useState(null);
@@ -715,15 +800,15 @@ function App() {
           });
           // One-time retitle of the saved poll name
           const currentTitle = renamed.title || data.title || '';
-          if (currentTitle.includes('Holiday & New Year Lunch 2026–2027')) {
-            renamed.title = 'Holiday Lunch 2026 - Pre AI Takeover';
+          if (currentTitle.includes('Holiday & New Year Lunch 2026–2027') || currentTitle.includes('Pre AI Takeover')) {
+            renamed.title = 'Holiday Lunch 2026';
           }
           if (Object.keys(renamed).length > 0) {
             Object.assign(data, renamed);
             updateDoc(roomDocRef, renamed).catch((e) => console.error('Error renaming room text:', e));
           }
           setEventData({
-            title: data.title || 'Holiday Lunch 2026 - Pre AI Takeover',
+            title: data.title || 'Holiday Lunch 2026',
             targetWindow: data.targetWindow || 'First 3 Weeks of December 2026 • Requested by Maxim',
             location: data.location || 'TBD — Vote on Restaurant Suggestions Below!',
             notes:
@@ -739,7 +824,7 @@ function App() {
         } else {
           // Initialize default shared room in Firestore if it doesn't exist yet
           const initialPayload = {
-            title: 'Holiday Lunch 2026 - Pre AI Takeover',
+            title: 'Holiday Lunch 2026',
             targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
             location: 'TBD — Vote on Restaurant Suggestions Below!',
             notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
@@ -1757,7 +1842,7 @@ function App() {
     if (!user) return;
     const newId = generateRoomId();
     const initialPayload = {
-      title: newPollTitle.trim() || 'Holiday Lunch 2026 - Pre AI Takeover',
+      title: newPollTitle.trim() || 'Holiday Lunch 2026',
       targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
       location: newPollLocation.trim() || 'TBD — Vote on Restaurant Suggestions Below!',
       notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
@@ -2007,18 +2092,20 @@ function App() {
 
       <main className="max-w-5xl mx-auto px-3 sm:px-6 pt-4 sm:pt-6 space-y-5 sm:space-y-6">
         {/* Cartus and Alumni Hero Event Banner */}
-        <section className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#0B1F3A] via-[#102A4C] to-[#004A99] text-white p-4 sm:p-8 shadow-xl shadow-slate-900/15 border border-[#00A3E0]/30">
-          <div className="absolute -right-12 -top-12 w-56 h-56 rounded-full bg-[#00A3E0]/15 blur-2xl pointer-events-none" />
-          <div className="absolute right-8 -bottom-16 w-48 h-48 rounded-full bg-amber-400/15 blur-2xl pointer-events-none" />
+        <section className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#7A1414]/90 via-[#A51C22]/90 to-[#5A0E13]/90 text-white px-4 pb-4 pt-16 sm:px-8 sm:pb-8 sm:pt-16 shadow-xl shadow-black/30 border border-amber-300/40">
+          <div className="absolute -left-10 -bottom-16 w-56 h-56 rounded-full bg-emerald-500/20 blur-2xl pointer-events-none" />
+          <div className="absolute right-10 -top-10 w-48 h-48 rounded-full bg-amber-300/20 blur-2xl pointer-events-none" />
+          <HangingOrnaments />
 
-          <div className="relative z-10 flex flex-col gap-4">
+          <div className="relative z-10 flex items-start gap-3 sm:gap-6">
+          <div className="flex-1 min-w-0 flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-400/20 text-amber-200 text-[11px] sm:text-xs font-bold border border-amber-300/30">
                 <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                 {eventData.targetWindow}
               </span>
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/10 text-sky-100 text-[11px] sm:text-xs font-medium border border-white/15">
-                <Users className="w-3.5 h-3.5 text-[#00A3E0]" />
+                <Users className="w-3.5 h-3.5 text-emerald-300" />
                 {participants.length} {participants.length === 1 ? 'person' : 'people'} in
               </span>
             </div>
@@ -2027,10 +2114,12 @@ function App() {
               <h1 className="text-xl sm:text-3xl font-extrabold tracking-tight leading-snug text-white">
                 {eventData.title}
               </h1>
-              <p className="mt-1.5 text-sky-100/90 text-xs sm:text-sm max-w-3xl leading-relaxed">
+              <p className="mt-1.5 text-red-50/90 text-xs sm:text-sm max-w-3xl leading-relaxed">
                 {eventData.notes}
               </p>
             </div>
+          </div>
+          <HolidayWreathSanta className="w-24 h-24 sm:w-44 sm:h-44 shrink-0 -mt-10 sm:-mt-12 drop-shadow-xl" />
           </div>
         </section>
 
@@ -2045,7 +2134,7 @@ function App() {
           const leadingRestaurants = showFullResults ? restaurantStats : restaurantStats.filter((r) => r.voteCount > 0).slice(0, 3);
           const pct = (n, total) => (total > 0 ? Math.round((n / total) * 100) : 0);
           return (
-            <section id="poll-results" className="scroll-mt-4 bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+            <section id="poll-results" className="scroll-mt-4 bg-white/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <div className="flex items-center gap-2">
                   <Trophy className="w-5 h-5 text-amber-500" />
@@ -2154,7 +2243,7 @@ function App() {
 
         {/* ORGANIZER DASHBOARD (only rendered for the organizer's verified Google account) */}
         {isOrganizer && (
-          <section id="organizer-dashboard" className="rounded-2xl sm:rounded-3xl border-2 border-[#0B1F3A] bg-white shadow-md overflow-hidden">
+          <section id="organizer-dashboard" className="rounded-2xl sm:rounded-3xl border-2 border-[#0B1F3A] bg-white/90 shadow-md overflow-hidden">
             <div className="bg-[#0B1F3A] text-white px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-base sm:text-lg font-extrabold">Organizer dashboard</h2>
@@ -2334,7 +2423,7 @@ function App() {
 
         {/* Locked Date Confirmation Banner (If Finalized) */}
         {lockedDateObj && (
-          <section className="rounded-2xl bg-emerald-50 border-2 border-emerald-500 p-4 sm:p-6 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <section className="rounded-2xl bg-emerald-50/90 border-2 border-emerald-500 p-4 sm:p-6 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div className="flex items-start gap-3">
               <div className="w-11 h-11 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
                 <PartyPopper className="w-5 h-5" />
@@ -2403,7 +2492,7 @@ function App() {
           return (
             <section
               id="your-rsvp"
-              className={`rounded-2xl sm:rounded-3xl bg-white shadow-md p-4 sm:p-6 border-2 ${going ? 'border-emerald-400' : 'border-amber-300'}`}
+              className={`rounded-2xl sm:rounded-3xl bg-white/90 shadow-md p-4 sm:p-6 border-2 ${going ? 'border-emerald-400' : 'border-amber-300'}`}
             >
               <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500">Your RSVP · {activeParticipant.name}</p>
               <h2 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A] mt-0.5">
@@ -2512,7 +2601,7 @@ function App() {
 
         {/* ADD TO CALENDAR (shown to everyone once the final date is locked) */}
         {lockedDateObj && calendarEvent && (
-          <section id="add-to-calendar" className="scroll-mt-4 bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+          <section id="add-to-calendar" className="scroll-mt-4 bg-white/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
             <div className="flex items-center gap-2.5 mb-3">
               <div className="w-9 h-9 rounded-xl bg-[#005EB8] text-white flex items-center justify-center shrink-0">
                 <CalendarPlus className="w-5 h-5" />
@@ -2594,7 +2683,7 @@ function App() {
         {/* ==================================================================== */}
         {/* STEP 1: ENTER YOUR NAME (16px font prevents iOS Safari auto-zoom)    */}
         {/* ==================================================================== */}
-        <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+        <section className="bg-white/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
           <div className="flex items-center gap-2.5 mb-3">
             <span className="w-7 h-7 rounded-full bg-[#005EB8] text-white text-xs font-extrabold flex items-center justify-center shrink-0">
               1
@@ -2876,7 +2965,7 @@ function App() {
         {/* ==================================================================== */}
         {/* STEP 2: CHOOSE A DATE (SEE WHO ALREADY CHOSE EACH DATE)              */}
         {/* ==================================================================== */}
-        <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90 space-y-4">
+        <section className="bg-white/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <span className="w-7 h-7 rounded-full bg-[#005EB8] text-white text-xs font-extrabold flex items-center justify-center shrink-0">
@@ -3092,7 +3181,7 @@ function App() {
         {/* ==================================================================== */}
         {/* STEP 3: RESTAURANT SUGGESTIONS & POLL (CLOSES FRI, NOV 20, 11:59 PM) */}
         {/* ==================================================================== */}
-        <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90 space-y-4">
+        <section className="bg-white/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-start gap-2.5">
               <span className="w-7 h-7 rounded-full bg-[#005EB8] text-white text-xs font-extrabold flex items-center justify-center shrink-0 mt-0.5">
@@ -3474,7 +3563,7 @@ function App() {
         {/* TEAM RSVP ROSTER SUMMARY                                             */}
         {/* ==================================================================== */}
         {participants.length > 0 && (
-          <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+          <section className="bg-white/90 rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
             <div className="flex items-center justify-between gap-2 mb-3">
               <div className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-[#005EB8]" />
