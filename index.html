@@ -21,7 +21,8 @@
     import {
       Calendar, Users, Share2, Check, Sparkles, Plus, Copy, Trophy, MapPin, Clock, Lock,
       Unlock, PartyPopper, Trash2, X, UserPlus, ChevronRight, AlertCircle, CalendarPlus,
-      Cloud, Wifi, WifiOff, ExternalLink, Utensils, ThumbsUp, CheckCircle2, Timer
+      Cloud, Wifi, WifiOff, ExternalLink, Utensils, ThumbsUp, CheckCircle2, Timer,
+      MessageSquare, Download, Bell, BookOpen, ChevronDown
     } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
 
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
@@ -85,7 +86,9 @@ const newPlacesSessionToken = () =>
   crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 // Autocomplete restricted to a 10-mile circle around Danbury; non-food results are dropped.
-const searchRestaurantPlaces = async (input, sessionToken) => {
+// Guide searches (restricted = false) only bias toward Danbury so guide spots slightly
+// farther out (e.g. Little Pub in Wilton) can still be found.
+const searchRestaurantPlaces = async (input, sessionToken, restricted = true) => {
   const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY },
@@ -93,7 +96,9 @@ const searchRestaurantPlaces = async (input, sessionToken) => {
       input,
       sessionToken,
       includedRegionCodes: ['us'],
-      locationRestriction: { circle: { center: SEARCH_CENTER, radius: SEARCH_RADIUS_METERS } },
+      ...(restricted
+        ? { locationRestriction: { circle: { center: SEARCH_CENTER, radius: SEARCH_RADIUS_METERS } } }
+        : { locationBias: { circle: { center: SEARCH_CENTER, radius: 30000 } } }),
     }),
   });
   if (!res.ok) throw new Error(`Places search failed (${res.status})`);
@@ -130,6 +135,205 @@ const getRestaurantPlaceDetails = async (placeId, sessionToken) => {
     location: p.location || null,
   };
 };
+
+// ============================================================================
+// CALENDAR INVITES (Google, Outlook.com, Office 365, Apple / any app via .ics)
+// ============================================================================
+const EVENT_TIME_ZONE = 'America/New_York';
+const EVENT_DURATION_MINUTES = 90;
+
+// UTC offset for New York on a given date, e.g. "-05:00"
+const nyOffsetFor = (dateStr) => {
+  try {
+    const part = new Intl.DateTimeFormat('en-US', { timeZone: EVENT_TIME_ZONE, timeZoneName: 'longOffset' })
+      .formatToParts(new Date(`${dateStr}T12:00:00Z`))
+      .find((p) => p.type === 'timeZoneName');
+    const m = /GMT([+-]\d{2}:\d{2})/.exec(part?.value || '');
+    return m ? m[1] : '-05:00';
+  } catch {
+    return '-05:00';
+  }
+};
+
+// "12:00 PM" -> { h: 12, m: 0 }
+const parseTimeLabel = (label = '12:00 PM') => {
+  const m = /(\d{1,2}):(\d{2})\s*([AP]M)?/i.exec(label);
+  if (!m) return { h: 12, m: 0 };
+  let h = Number(m[1]) % 12;
+  if ((m[3] || 'PM').toUpperCase() === 'PM') h += 12;
+  return { h, m: Number(m[2]) };
+};
+
+const buildCalendarEvent = ({ dateStr, timeLabel, title, restaurant, pageLink }) => {
+  const { h, m } = parseTimeLabel(timeLabel);
+  const pad = (n) => String(n).padStart(2, '0');
+  const start = new Date(`${dateStr}T${pad(h)}:${pad(m)}:00${nyOffsetFor(dateStr)}`);
+  const end = new Date(start.getTime() + EVENT_DURATION_MINUTES * 60000);
+  const location = restaurant ? [restaurant.name, restaurant.address].filter(Boolean).join(', ') : 'Restaurant TBD';
+  const descriptionLines = [
+    restaurant ? `Restaurant: ${restaurant.name}` : 'Restaurant: TBD',
+    restaurant?.mapsUrl ? `Map: ${restaurant.mapsUrl}` : '',
+    `Poll & details: ${pageLink}`,
+  ].filter(Boolean);
+  return { title, start, end, location, description: descriptionLines.join('\n'), pageLink };
+};
+
+const toUtcStamp = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+
+const googleCalendarUrl = (ev) =>
+  'https://calendar.google.com/calendar/render?' +
+  new URLSearchParams({
+    action: 'TEMPLATE',
+    text: ev.title,
+    dates: `${toUtcStamp(ev.start)}/${toUtcStamp(ev.end)}`,
+    details: ev.description,
+    location: ev.location,
+    ctz: EVENT_TIME_ZONE,
+  }).toString();
+
+// kind: 'live' (Outlook.com / Hotmail) or 'office' (work or school Microsoft 365)
+const outlookCalendarUrl = (ev, kind) =>
+  `https://outlook.${kind === 'office' ? 'office' : 'live'}.com/calendar/0/deeplink/compose?` +
+  new URLSearchParams({
+    path: '/calendar/action/compose',
+    rru: 'addevent',
+    subject: ev.title,
+    startdt: ev.start.toISOString(),
+    enddt: ev.end.toISOString(),
+    body: ev.description,
+    location: ev.location,
+  }).toString();
+
+const icsEscape = (s = '') => s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+
+// .ics works with Apple Calendar, Outlook desktop and most other calendar apps
+const buildIcs = (ev, withReminders) => {
+  const alarm = (trigger, text) => [
+    'BEGIN:VALARM',
+    'ACTION:DISPLAY',
+    `DESCRIPTION:${icsEscape(text)}`,
+    `TRIGGER:${trigger}`,
+    'END:VALARM',
+  ];
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Cartus and Alumni//Holiday Lunch Poll//EN',
+    'CALSCALE:GREGORIAN',
+    'METHOD:PUBLISH',
+    'BEGIN:VEVENT',
+    `UID:holiday-lunch-${toUtcStamp(ev.start)}@andy2o3.github.io`,
+    `DTSTAMP:${toUtcStamp(new Date())}`,
+    `DTSTART:${toUtcStamp(ev.start)}`,
+    `DTEND:${toUtcStamp(ev.end)}`,
+    `SUMMARY:${icsEscape(ev.title)}`,
+    `LOCATION:${icsEscape(ev.location)}`,
+    `DESCRIPTION:${icsEscape(ev.description)}`,
+    `URL:${ev.pageLink}`,
+    ...(withReminders
+      ? [...alarm('-P1D', `Tomorrow: ${ev.title}`), ...alarm('-PT1H', `In 1 hour: ${ev.title}`)]
+      : []),
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ];
+  return lines.join('\r\n');
+};
+
+const downloadIcs = (ics, filename) => {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (isIOS) {
+    // iOS Safari opens a data: calendar file straight into the "Add to Calendar" sheet
+    window.location.href = `data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`;
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([ics], { type: 'text/calendar;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+};
+
+// ============================================================================
+// QUICK SUGGESTION GUIDE (from "Greater Danbury Corporate Holiday Lunch Guide.pdf")
+// ============================================================================
+const GUIDE_PDF_URL = 'Greater-Danbury-Holiday-Lunch-Guide.pdf';
+const normalizeForMatch = (s = '') => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const HOLIDAY_LUNCH_GUIDE = [
+  {
+    name: 'J. Law Kitchen & Craft Bar', area: 'Danbury (Germantown Rd)', match: 'jlaw', search: 'J. Law Kitchen & Craft Bar Danbury',
+    cuisine: 'Modern American & Global Bowls', diet: 'Dedicated gluten-free menu; strong vegan & vegetarian bowls',
+    vibe: 'Miracle Christmas cocktail pop-up; private dining room; ample parking',
+    dishes: ['House-Smoked Brisket French Dip', 'Pulled Shiitake Mushroom Bowl (Vegan)', 'Salmon BLTA'],
+    menuUrl: 'https://www.jlawct.com/menu',
+  },
+  {
+    name: 'Market Place Kitchen & Bar', area: 'Danbury (Mill Plain Rd)', match: 'marketplace', search: 'Market Place Kitchen & Bar Danbury',
+    cuisine: 'Farm-to-Table New American', diet: 'Clearly marked gluten-free, vegetarian & vegan dishes',
+    vibe: 'Warm wood-and-brick room with seasonal trimmings; easy I-84 access',
+    dishes: ['Korean Crispy Tofu Rice Bowl (GF/V)', 'Bistro Steak & Truffle Frites', 'Ahi Tuna Poke Bowl'],
+    menuUrl: 'https://order.marketplacekitchenbar.com/order/market-place-tavern-danbury-33-mill-plain-road',
+  },
+  {
+    name: 'Barnwood Tavern', area: 'Danbury / Brookfield line', match: 'barnwood', search: 'Barnwood Tavern Danbury',
+    cuisine: 'Elevated American Tavern', diet: 'Kitchen adapts dishes for gluten-free & dairy-free diners',
+    vibe: 'Rustic timber lodge with a cozy fireplace',
+    dishes: ['Burnt Ends Brisket Sandwich', 'Teriyaki Salmon Rice Bowl', 'Blackened Shrimp Tacos'],
+    menuUrl: 'https://www.barnwoodtavern.com/menus?menu=dinner-menu-1',
+  },
+  {
+    name: "Rosy Tomorrow's", area: 'Danbury (Old Ridgebury Rd)', match: 'rosytomorrow', search: "Rosy Tomorrow's Danbury",
+    cuisine: 'Classic American & Comfort', diet: 'Steaks, seafood, salads; gluten-free bun options',
+    vibe: '40-year local landmark with nostalgic holiday lights & train display; fast lunch service',
+    dishes: ['Barolo Braised Beef Short Ribs', 'Lemon Sage Chicken with Rice', 'Classic Tavern Burgers'],
+    menuUrl: 'https://www.rosytomorrows.com/specials',
+  },
+  {
+    name: 'Cafe on the Green', area: 'Danbury (Richter Park)', match: 'cafeonthegreen', search: 'Cafe on the Green Danbury',
+    cuisine: 'Northern Italian & Fusion Bowls', diet: 'Classic pastas plus lighter rice bowls & seafood',
+    vibe: 'Holiday garlands, golf course views; private room for a quieter lunch',
+    dishes: ['Beef Short Rib Pappardelle', 'Grilled Salmon with Capers & Herbs', 'Eggplant Parmesan'],
+    menuUrl: 'https://cafeonthegreenrestaurant.com/menu',
+  },
+  {
+    name: 'Little Pub Wilton', area: 'Wilton (Route 7, ~20 min south)', match: 'littlepub', search: 'Little Pub Wilton CT',
+    cuisine: 'Creative Gastropub & Global', diet: 'Standout vegan, vegetarian & creative comfort picks',
+    vibe: 'Storybook English-cottage tavern with a central fireplace & festive décor',
+    dishes: ['Midtown Falafel Flatbread', 'Napa Blackened Salmon Flatbread', "General Tso's Crispy Cauliflower"],
+    menuUrl: 'https://littlepub.com/menu',
+  },
+  {
+    name: "Molly Darcy's Irish Pub", area: 'Danbury (Mill Plain Rd)', match: 'mollydarcy', search: "Molly Darcy's Danbury",
+    cuisine: 'Irish-American Pub Fare', diet: 'Hearty classics plus salads, wraps & vegetarian apps',
+    vibe: 'Warm wood booths, seasonal décor; group banquet/lunch room',
+    dishes: ["Shepherd's Pie or Fish & Chips", 'Blackened Salmon Caesar Wrap', 'Corned Beef Reuben'],
+    menuUrl: 'https://www.mollydarcy.com/mollysdanburyct',
+  },
+  {
+    name: "Barbarie's Black Angus Grill", area: 'Danbury (Backus Ave)', match: 'blackangus', search: 'Black Angus Grill Danbury Backus Ave',
+    cuisine: 'Steakhouse & American Grill', diet: 'Dedicated 11 AM–4 PM lunch menu: steak, fajitas, wraps',
+    vibe: 'Upscale-casual steakhouse lodge; easy parking near Danbury Fair',
+    dishes: ['Angus Steak Sandwich or French Dip', 'Sizzling Fajitas', 'Mediterranean Hummus & Feta Wrap'],
+    menuUrl: 'https://www.blackangusdanbury.com/lunch',
+  },
+  {
+    name: 'Hacienda Don Manuel', area: 'Brookfield (Federal Rd)', match: 'haciendadonmanuel', search: 'Hacienda Don Manuel Brookfield',
+    cuisine: 'Authentic Mexican', diet: 'Vegetarian section; many naturally gluten-free corn dishes',
+    vibe: 'Vibrant room with colorful holiday lights & big group tables',
+    dishes: ['Sizzling Fajitas', 'Spinach & Mushroom Enchiladas', 'Table-Side Guacamole'],
+    menuUrl: 'https://www.haciendadonmanuel.com/digital-menu/',
+  },
+  {
+    name: 'Two Steps Downtown Grille', area: 'Danbury (Ives St)', match: 'twosteps', search: 'Two Steps Downtown Grille Danbury',
+    cuisine: 'Southwestern & American Comfort', diet: 'Experienced with large groups & custom dietary trays',
+    vibe: 'Historic converted firehouse; flexible seating for 20',
+    dishes: ['Southwestern Fajitas & Chili', 'Roasted Turkey with Cranberry Relish', 'Mini Lobster Grilled Cheese'],
+    menuUrl: 'https://twostepsdowntowngrille.netwaiter.com/',
+  },
+];
 
 // Link for any restaurant (older entries without a Google place fall back to a Maps search)
 const restaurantMapsUrl = (rest) =>
@@ -332,6 +536,9 @@ function App() {
   const [placesError, setPlacesError] = useState('');
   const [isAddingPlace, setIsAddingPlace] = useState(false);
   const placesSessionRef = useRef(newPlacesSessionToken());
+  const [guideSearch, setGuideSearch] = useState(false); // search started from the Quick Suggestion Guide
+  const [showGuide, setShowGuide] = useState(true);
+  const [calendarReminders, setCalendarReminders] = useState(true);
 
   // Organizer (Google sign-in) state
   const [isOrganizer, setIsOrganizer] = useState(false);
@@ -791,7 +998,7 @@ function App() {
     setIsSearchingPlaces(true);
     const t = setTimeout(async () => {
       try {
-        const results = await searchRestaurantPlaces(q, placesSessionRef.current);
+        const results = await searchRestaurantPlaces(q, placesSessionRef.current, !guideSearch);
         if (!cancelled) {
           setPlaceSuggestions(results);
           setPlacesError('');
@@ -810,7 +1017,7 @@ function App() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [restaurantQuery]);
+  }, [restaurantQuery, guideSearch]);
 
   // Restaurants already on the poll that match what's being typed
   const matchingExistingRestaurants = useMemo(() => {
@@ -823,6 +1030,7 @@ function App() {
 
   const resetRestaurantSearch = () => {
     setRestaurantQuery('');
+    setGuideSearch(false);
     setPlaceSuggestions([]);
     setPlacesError('');
     setNewRestaurantNote('');
@@ -874,6 +1082,29 @@ function App() {
     }
   };
 
+  // Restaurant from the Quick Suggestion Guide already on the poll (matched by name)
+  const findGuideMatch = (item) =>
+    restaurantStats.find((r) => normalizeForMatch(r.name).includes(item.match)) || null;
+
+  // Guide button: vote if it's already suggested, otherwise look it up on Google Maps
+  const handleGuidePick = (item) => {
+    if (isRestaurantPollClosed) {
+      triggerToast('Restaurant voting closed on Friday, Nov 20.', 'info');
+      return;
+    }
+    const existing = findGuideMatch(item);
+    if (existing) {
+      handlePickExistingRestaurant(existing);
+      return;
+    }
+    placesSessionRef.current = newPlacesSessionToken();
+    setGuideSearch(true);
+    setRestaurantQuery(item.search);
+    const el = document.getElementById('restaurant-search-input');
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    triggerToast(`Tap the right "${item.name}" listing to add it with your vote.`, 'info');
+  };
+
   // Picking a Google Maps result: vote for it if it's already on the poll, otherwise add it
   const handlePickPlace = async (prediction) => {
     if (isRestaurantPollClosed) {
@@ -885,7 +1116,7 @@ function App() {
     setIsAddingPlace(true);
     try {
       const place = await getRestaurantPlaceDetails(prediction.placeId, placesSessionRef.current);
-      if (place.location && milesBetween(SEARCH_CENTER, place.location) > SEARCH_RADIUS_MILES + 0.5) {
+      if (!guideSearch && place.location && milesBetween(SEARCH_CENTER, place.location) > SEARCH_RADIUS_MILES + 0.5) {
         triggerToast(`${place.name} is more than ${SEARCH_RADIUS_MILES} miles from Danbury.`, 'error');
         return;
       }
@@ -1111,6 +1342,10 @@ function App() {
 
   const handleLockDate = async (dateId) => {
     if (!user) return;
+    if (!isOrganizer) {
+      triggerToast('Only the poll organizer can lock in the final date.', 'error');
+      return;
+    }
     const isUnlocking = eventData.lockedDateId === dateId;
     const nextLockedId = isUnlocking ? null : dateId;
     const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
@@ -1119,6 +1354,7 @@ function App() {
       triggerToast(isUnlocking ? 'Unlocked final date.' : 'Holiday lunch date locked in for everyone!');
     } catch (err) {
       console.error('Error locking date:', err);
+      triggerToast('Could not change the final date.', 'error');
     }
   };
 
@@ -1208,16 +1444,71 @@ function App() {
     return `🎄 *${eventData.title}* 🥂\n🔵 *Cartus and Alumni Team • Christmas & New Year 2026–2027*\n🗓️ Primary Window: First 3 Weeks of December 2026 (Dec 1 – Dec 18) — Requested by Maxim${restLine}\n\nHey Cartus and Alumni! Just enter your name and tap the December dates that work for you (you can also see who already picked each date!):${linkLine}`;
   }, [eventData, savedShareUrl, restaurantStats, isRestaurantPollClosed]);
 
-  const finalAnnouncementText = useMemo(() => {
-    const lockedObj = dateStats.find((d) => d.id === eventData.lockedDateId);
-    if (!lockedObj) return '';
-    const formatted = formatDateParts(lockedObj.dateStr);
-    const winningRest = winningRestaurants.length > 0 ? winningRestaurants.map((r) => r.name).join(' / ') : eventData.location;
-    const linkLine = savedShareUrl ? `\n🔗 Poll Board: ${savedShareUrl}` : '';
-    return `🎉 *CONFIRMED: ${eventData.title}* 🎉\n🔵 *Cartus and Alumni Holiday & New Year Celebration*\n\n📅 *Date:* ${formatted.full}\n⏰ *Time:* ${lockedObj.timeLabel}\n🍽️ *Restaurant:* ${winningRest}\n👥 *Confirmed Attendees (${lockedObj.yesCount}):* ${lockedObj.yesPeople.join(', ') || 'Team'}${linkLine}\n\nHappy Holidays & Happy New Year 2027, Cartus and Alumni! 🎄🥂`;
-  }, [eventData, dateStats, savedShareUrl, winningRestaurants]);
-
   const lockedDateObj = dateStats.find((d) => d.id === eventData.lockedDateId);
+
+  // Link back to this poll (keeps a non-default room) that opens the "Add to calendar" card
+  const calendarPageLink = useMemo(() => {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const roomQuery = roomId && roomId !== 'cartus-it-2026' ? `?room=${encodeURIComponent(roomId)}` : '';
+    return `${base}${roomQuery}#add-to-calendar`;
+  }, [roomId]);
+
+  // Final restaurant: the single winner, or "A / B" when tied (no address then)
+  const finalRestaurant = useMemo(() => {
+    if (winningRestaurants.length === 1) return winningRestaurants[0];
+    if (winningRestaurants.length > 1) return { name: winningRestaurants.map((r) => r.name).join(' / ') };
+    return null;
+  }, [winningRestaurants]);
+
+  const calendarEvent = useMemo(() => {
+    if (!lockedDateObj) return null;
+    return buildCalendarEvent({
+      dateStr: lockedDateObj.dateStr,
+      timeLabel: lockedDateObj.timeLabel,
+      title: 'Cartus and Alumni Holiday Lunch 🎄',
+      restaurant: finalRestaurant,
+      pageLink: calendarPageLink,
+    });
+  }, [lockedDateObj, finalRestaurant, calendarPageLink]);
+
+  // Text message the organizer sends once the date is locked
+  const finalAnnouncementText = useMemo(() => {
+    if (!lockedDateObj) return '';
+    const formatted = formatDateParts(lockedDateObj.dateStr);
+    const restLine = finalRestaurant
+      ? `🍽️ ${finalRestaurant.name}${finalRestaurant.address ? `\n📍 ${finalRestaurant.address}` : ''}`
+      : '🍽️ Restaurant: TBD';
+    const mapLine = finalRestaurant?.mapsUrl ? `\n🗺️ Map: ${finalRestaurant.mapsUrl}` : '';
+    return `🎄 Cartus and Alumni Holiday Lunch is set! 🥂\n\n📅 ${formatted.full} at ${lockedDateObj.timeLabel}\n${restLine}${mapLine}\n\nAdd it to your calendar (Outlook, Apple, Google & more), with optional reminders the day before and 1 hour before:\n${calendarPageLink}`;
+  }, [lockedDateObj, finalRestaurant, calendarPageLink]);
+
+  const handleTextInvite = () => {
+    // "sms:?&body=" opens Messages with the text filled in (works on iPhone and Android)
+    window.location.href = `sms:?&body=${encodeURIComponent(finalAnnouncementText)}`;
+  };
+
+  const handleShareInvite = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: 'Cartus and Alumni Holiday Lunch', text: finalAnnouncementText });
+      } catch {
+        // Share sheet dismissed
+      }
+    } else {
+      copyToClipboard(finalAnnouncementText, 'final');
+    }
+  };
+
+  // Open the "Add to calendar" card when arriving from the invite link
+  useEffect(() => {
+    if (window.location.hash === '#add-to-calendar' && lockedDateObj) {
+      const t = setTimeout(() => {
+        const el = document.getElementById('add-to-calendar');
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 400);
+      return () => clearTimeout(t);
+    }
+  }, [Boolean(lockedDateObj)]);
 
   // ============================================================================
   // RENDER UI (iPhone & Mobile Safari First)
@@ -1403,22 +1694,119 @@ function App() {
                 )}
               </div>
             </div>
-            <div className="flex flex-col xs:flex-row sm:flex-wrap items-stretch xs:items-center gap-2 shrink-0">
-              <button
-                onClick={() => copyToClipboard(finalAnnouncementText, 'final')}
-                className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm transition-all touch-manipulation"
-              >
-                {copiedType === 'final' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                <span>{copiedType === 'final' ? 'Copied!' : 'Copy Announcement'}</span>
-              </button>
-              <button
-                onClick={() => handleLockDate(lockedDateObj.id)}
-                className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-3 py-2.5 rounded-xl bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold transition-all touch-manipulation"
-              >
-                <Unlock className="w-3.5 h-3.5" />
-                <span>Unlock</span>
-              </button>
+            {isOrganizer && (
+              <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2 shrink-0">
+                <button
+                  onClick={handleTextInvite}
+                  className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm transition-all touch-manipulation"
+                >
+                  <MessageSquare className="w-4 h-4" />
+                  <span>Text the invite</span>
+                </button>
+                <button
+                  onClick={handleShareInvite}
+                  className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-sm font-semibold transition-all touch-manipulation"
+                >
+                  <Share2 className="w-4 h-4" />
+                  <span>Share</span>
+                </button>
+                <button
+                  onClick={() => copyToClipboard(finalAnnouncementText, 'final')}
+                  className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-sm font-semibold transition-all touch-manipulation"
+                >
+                  {copiedType === 'final' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedType === 'final' ? 'Copied!' : 'Copy invite'}</span>
+                </button>
+                <button
+                  onClick={() => handleLockDate(lockedDateObj.id)}
+                  className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-3 py-2.5 rounded-xl bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold transition-all touch-manipulation"
+                >
+                  <Unlock className="w-3.5 h-3.5" />
+                  <span>Unlock</span>
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ADD TO CALENDAR (shown to everyone once the final date is locked) */}
+        {lockedDateObj && calendarEvent && (
+          <section id="add-to-calendar" className="scroll-mt-4 bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="w-9 h-9 rounded-xl bg-[#005EB8] text-white flex items-center justify-center shrink-0">
+                <CalendarPlus className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">Add to your calendar</h2>
+                <p className="text-xs text-slate-500">
+                  {formatDateParts(lockedDateObj.dateStr).full} · {lockedDateObj.timeLabel}
+                  {finalRestaurant ? ` · ${finalRestaurant.name}` : ''}
+                </p>
+              </div>
             </div>
+
+            <label className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200 mb-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={calendarReminders}
+                onChange={(e) => setCalendarReminders(e.target.checked)}
+                className="mt-0.5 w-5 h-5 accent-[#005EB8] shrink-0"
+              />
+              <span className="text-sm text-slate-700">
+                <span className="font-semibold inline-flex items-center gap-1"><Bell className="w-3.5 h-3.5" /> Remind me the day before and 1 hour before</span>
+                <span className="block text-xs text-slate-500 mt-0.5">
+                  Included in the Apple / Outlook / other (.ics) file. Google Calendar and Outlook on the web use your calendar's usual notification settings.
+                </span>
+              </span>
+            </label>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                onClick={() => downloadIcs(buildIcs(calendarEvent, calendarReminders), 'cartus-alumni-holiday-lunch.ics')}
+                className="inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-2.5 rounded-xl bg-[#0B1F3A] hover:bg-[#13305a] text-white text-sm font-semibold shadow-sm transition-all touch-manipulation sm:col-span-2"
+              >
+                <Download className="w-4 h-4" />
+                <span>Apple Calendar / Outlook app / Other (.ics)</span>
+              </button>
+              <a
+                href={googleCalendarUrl(calendarEvent)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-sm font-semibold transition-all touch-manipulation"
+              >
+                <Calendar className="w-4 h-4 text-[#4285F4]" />
+                <span>Google Calendar</span>
+              </a>
+              <a
+                href={outlookCalendarUrl(calendarEvent, 'live')}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-sm font-semibold transition-all touch-manipulation"
+              >
+                <Calendar className="w-4 h-4 text-[#0078D4]" />
+                <span>Outlook.com (personal)</span>
+              </a>
+              <a
+                href={outlookCalendarUrl(calendarEvent, 'office')}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-sm font-semibold transition-all touch-manipulation sm:col-span-2"
+              >
+                <Calendar className="w-4 h-4 text-[#0078D4]" />
+                <span>Outlook / Office 365 (work or school)</span>
+              </a>
+            </div>
+            {finalRestaurant?.mapsUrl && (
+              <a
+                href={finalRestaurant.mapsUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-[#005EB8] hover:underline"
+              >
+                <MapPin className="w-3.5 h-3.5" /> {finalRestaurant.address || 'Open in Google Maps'}
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
           </section>
         )}
 
@@ -1757,7 +2145,7 @@ function App() {
                         )}
                       </button>
 
-                      <button
+                      {isOrganizer && (<button
                         type="button"
                         onClick={() => handleLockDate(d.id)}
                         title={isLocked ? 'Unlock date' : 'Lock in this date for the team'}
@@ -1768,7 +2156,7 @@ function App() {
                         }`}
                       >
                         {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
-                      </button>
+                      </button>)}
 
                       <button
                         type="button"
@@ -1918,8 +2306,12 @@ function App() {
                   autoComplete="off"
                   aria-label="Search for a restaurant on Google Maps"
                   value={restaurantQuery}
-                  onChange={(e) => setRestaurantQuery(e.target.value)}
+                  onChange={(e) => {
+                    setGuideSearch(false);
+                    setRestaurantQuery(e.target.value);
+                  }}
                   placeholder="Search Google Maps for a restaurant near Danbury"
+                  id="restaurant-search-input"
                   className="w-full min-h-[48px] pl-10 pr-10 py-3 rounded-xl border-2 border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base outline-none transition-all"
                 />
                 {restaurantQuery && (
@@ -2022,6 +2414,93 @@ function App() {
               )}
             </div>
           )}
+
+          {/* Quick Suggestion Guide (from the Greater Danbury Corporate Holiday Lunch Guide PDF) */}
+          <div className="rounded-2xl border border-amber-200 bg-amber-50/60">
+            <button
+              type="button"
+              onClick={() => setShowGuide((v) => !v)}
+              aria-expanded={showGuide}
+              className="w-full flex items-center justify-between gap-3 p-3 sm:p-4 text-left touch-manipulation"
+            >
+              <span className="flex items-center gap-2.5">
+                <span className="w-9 h-9 rounded-xl bg-amber-400 text-[#0B1F3A] flex items-center justify-center shrink-0">
+                  <BookOpen className="w-5 h-5" />
+                </span>
+                <span>
+                  <span className="block text-sm sm:text-base font-extrabold text-[#0B1F3A]">Quick Suggestion Guide</span>
+                  <span className="block text-xs text-slate-600">10 group-friendly lunch spots around Greater Danbury</span>
+                </span>
+              </span>
+              <ChevronDown className={`w-5 h-5 text-slate-500 shrink-0 transition-transform ${showGuide ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showGuide && (
+              <div className="px-3 sm:px-4 pb-3 sm:pb-4 space-y-3">
+                <div className="flex gap-3 overflow-x-auto snap-x snap-mandatory pb-2 -mx-1 px-1">
+                  {HOLIDAY_LUNCH_GUIDE.map((item) => {
+                    const match = findGuideMatch(item);
+                    const iVoted = Boolean(
+                      match && Array.isArray(activeParticipant?.restaurantVotes) && activeParticipant.restaurantVotes.includes(match.id)
+                    );
+                    return (
+                      <div
+                        key={item.match}
+                        className="snap-start shrink-0 w-[260px] sm:w-[280px] rounded-xl bg-white border border-slate-200 shadow-sm p-3 flex flex-col"
+                      >
+                        <h4 className="text-sm font-extrabold text-[#0B1F3A] leading-snug">{item.name}</h4>
+                        <p className="text-[11px] text-slate-500">{item.area}</p>
+                        <p className="text-xs text-slate-700 mt-1.5"><span className="font-semibold">Cuisine:</span> {item.cuisine}</p>
+                        <p className="text-xs text-slate-700"><span className="font-semibold">Diet:</span> {item.diet}</p>
+                        <p className="text-xs text-slate-700"><span className="font-semibold">Vibe:</span> {item.vibe}</p>
+                        <ul className="mt-1.5 text-xs text-slate-600 list-disc pl-4 space-y-0.5 flex-1">
+                          {item.dishes.map((dish) => <li key={dish}>{dish}</li>)}
+                        </ul>
+                        <div className="mt-2.5 flex items-center gap-2">
+                          {!isRestaurantPollClosed && (
+                            <button
+                              type="button"
+                              onClick={() => handleGuidePick(item)}
+                              disabled={iVoted}
+                              className={`flex-1 inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold transition-all touch-manipulation ${
+                                iVoted
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                  : 'bg-[#005EB8] hover:bg-[#004a93] text-white'
+                              }`}
+                            >
+                              {iVoted ? (
+                                <><CheckCircle2 className="w-3.5 h-3.5" /> Voted ({match.voteCount})</>
+                              ) : match ? (
+                                <><ThumbsUp className="w-3.5 h-3.5" /> Vote ({match.voteCount})</>
+                              ) : (
+                                <><Plus className="w-3.5 h-3.5" /> Suggest</>
+                              )}
+                            </button>
+                          )}
+                          <a
+                            href={item.menuUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center gap-1 min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold text-[#005EB8] border border-slate-300 hover:bg-slate-50 touch-manipulation"
+                          >
+                            Menu <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <a
+                  href={GUIDE_PDF_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#005EB8] hover:underline"
+                >
+                  <Download className="w-3.5 h-3.5" /> Download the full guide (PDF)
+                </a>
+              </div>
+            )}
+          </div>
 
           {/* Suggested Restaurants List & Live Poll */}
           {restaurantStats.length === 0 ? (
