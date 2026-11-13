@@ -35,7 +35,39 @@
     .ornament-swing { transform-origin: 50% 0; animation: ornament-swing 3.2s ease-in-out infinite; }
     @media (prefers-reduced-motion: reduce) { .ornament-swing { animation: none; } }
     #xmas-snow { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+
+    /* Other event themes */
+    html[data-theme="winter"], html[data-theme="winter"] body { background-color: #0b1a33; }
+    html[data-theme="winter"] #xmas-bg {
+      background:
+        radial-gradient(1100px 620px at 8% -8%, rgba(56, 189, 248, 0.30), transparent 62%),
+        radial-gradient(900px 520px at 108% 6%, rgba(165, 180, 252, 0.25), transparent 60%),
+        radial-gradient(1000px 700px at 50% 118%, rgba(14, 116, 144, 0.35), transparent 62%),
+        linear-gradient(180deg, #0a1730 0%, #10264a 48%, #0b1d3a 100%);
+    }
+    html[data-theme="summer"], html[data-theme="summer"] body { background-color: #7c2d12; }
+    html[data-theme="summer"] #xmas-bg {
+      background:
+        radial-gradient(1100px 620px at 85% -10%, rgba(250, 204, 21, 0.45), transparent 62%),
+        radial-gradient(900px 600px at -5% 20%, rgba(249, 115, 22, 0.35), transparent 60%),
+        radial-gradient(1200px 700px at 50% 120%, rgba(13, 148, 136, 0.55), transparent 62%),
+        linear-gradient(180deg, #9a3412 0%, #c2410c 45%, #0f766e 100%);
+    }
+    html[data-theme="plain"], html[data-theme="plain"] body { background-color: #f1f5f9; }
+    html[data-theme="plain"] #xmas-bg { background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%); }
+    html[data-theme="summer"] #xmas-bg::after, html[data-theme="plain"] #xmas-bg::after { display: none; }
   </style>
+  <script>
+    // Pick the event's last-seen theme before the page draws
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search);
+        var room = q.get('room') || 'cartus-it-2026';
+        var t = q.has('admin') ? 'plain' : (localStorage.getItem('lunchpoll_theme_' + room) || (room === 'cartus-it-2026' ? 'christmas' : 'plain'));
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <div id="xmas-bg" aria-hidden="true"></div>
@@ -54,12 +86,12 @@
       Calendar, Users, Share2, Check, Sparkles, Plus, Copy, Trophy, MapPin, Clock, Lock,
       Unlock, PartyPopper, Trash2, X, UserPlus, ChevronRight, AlertCircle, CalendarPlus,
       Cloud, Wifi, WifiOff, ExternalLink, Utensils, ThumbsUp, CheckCircle2, Timer,
-      MessageSquare, Download, Bell, BookOpen, ChevronDown
+      MessageSquare, Download, Bell, BookOpen, ChevronDown, Settings, LogOut
     } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
 
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
     import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-    import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import { getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     // 2. Firebase project config
     const firebaseConfig = {
@@ -77,14 +109,14 @@
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
     // 3. App code
-// Restaurant Poll Cutoff: Friday, November 20, 2026 at 11:59:59 PM EST
-const RESTAURANT_DEADLINE_MS = new Date('2026-11-20T23:59:59-05:00').getTime();
+// The original poll (no ?room= in the link)
+const DEFAULT_ROOM_ID = 'cartus-it-2026';
 
 // ============================================================================
-// ORGANIZER (only this Google account may close/reopen the restaurant poll).
+// SUPER ADMIN (can manage every event and approve organizers).
 // Stored as a SHA-256 hash so the address isn't published; Firestore rules enforce it.
 // ============================================================================
-const ORGANIZER_EMAIL_SHA256 = '7ecdc79a06bb154b4709cfb027fa1beab8d44a961909bde024bf8f3a6e1ae9e0';
+const SUPER_ADMIN_EMAIL_SHA256 = '7ecdc79a06bb154b4709cfb027fa1beab8d44a961909bde024bf8f3a6e1ae9e0';
 
 const sha256Hex = async (text) => {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
@@ -96,9 +128,90 @@ const sha256Hex = async (text) => {
 // ============================================================================
 // Browser key: restricted to Places API (New) and https://andy2o3.github.io/*, with daily quota caps
 const GOOGLE_PLACES_API_KEY = 'AIzaSyCauIjacJB-NypfCdDG23yif_BLYSVfVvQ';
-const SEARCH_CENTER = { latitude: 41.3948, longitude: -73.454 }; // Danbury, CT
-const SEARCH_RADIUS_MILES = 10;
-const SEARCH_RADIUS_METERS = Math.round(SEARCH_RADIUS_MILES * 1609.34);
+const DANBURY_CENTER = { latitude: 41.3948, longitude: -73.454, label: 'Danbury, CT' };
+const MAX_RADIUS_MILES = 30; // Places API location circles max out at 50 km
+
+// ---------------- Event template: settings every event carries ----------------
+const THEME_KEYS = ['christmas', 'winter', 'summer', 'plain'];
+const THEME_LABELS = { christmas: 'Christmas', winter: 'Winter / New Year', summer: 'Summer', plain: 'Plain' };
+const DEFAULT_EVENT_SETTINGS = {
+  searchCenter: DANBURY_CENTER,
+  searchRadiusMiles: 10,
+  restaurantDeadlineMs: new Date('2026-11-20T23:59:59-05:00').getTime(),
+  theme: 'christmas',
+  guideEnabled: true,
+  defaultTimeLabel: '12:00 PM',
+};
+
+const normalizeEvent = (data = {}) => ({
+  title: data.title || 'Team Lunch',
+  targetWindow: data.targetWindow || '',
+  location: data.location || '',
+  notes: data.notes || '',
+  dates: Array.isArray(data.dates) ? data.dates : [],
+  restaurants: Array.isArray(data.restaurants) ? data.restaurants : [],
+  restaurantPollForceClosed: Boolean(data.restaurantPollForceClosed),
+  lockedDateId: data.lockedDateId || null,
+  sharedUrl: data.sharedUrl || '',
+  searchCenter:
+    data.searchCenter && typeof data.searchCenter.latitude === 'number'
+      ? { label: 'the event area', ...data.searchCenter }
+      : DEFAULT_EVENT_SETTINGS.searchCenter,
+  searchRadiusMiles: Math.min(MAX_RADIUS_MILES, Number(data.searchRadiusMiles) > 0 ? Number(data.searchRadiusMiles) : DEFAULT_EVENT_SETTINGS.searchRadiusMiles),
+  restaurantDeadlineMs: Number(data.restaurantDeadlineMs) > 0 ? Number(data.restaurantDeadlineMs) : DEFAULT_EVENT_SETTINGS.restaurantDeadlineMs,
+  theme: THEME_KEYS.includes(data.theme) ? data.theme : DEFAULT_EVENT_SETTINGS.theme,
+  guideEnabled: data.guideEnabled !== undefined ? Boolean(data.guideEnabled) : DEFAULT_EVENT_SETTINGS.guideEnabled,
+  defaultTimeLabel: data.defaultTimeLabel || DEFAULT_EVENT_SETTINGS.defaultTimeLabel,
+  organizerUids: Array.isArray(data.organizerUids) ? data.organizerUids : [],
+});
+
+// ---------------- Date / time helpers for organizers ----------------
+const pad2 = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const parseYmd = (s) => {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+};
+// Monday of the week a date falls in (groups the date filter tabs)
+const weekStartOf = (dateStr) => {
+  const d = parseYmd(dateStr);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return ymd(d);
+};
+const timeInputToLabel = (v = '12:00') => {
+  const [H, M] = v.split(':').map(Number);
+  return `${((H + 11) % 12) + 1}:${pad2(M || 0)} ${H >= 12 ? 'PM' : 'AM'}`;
+};
+const msToLocalInput = (ms) => {
+  const d = new Date(ms);
+  return `${ymd(d)}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+const formatDeadline = (ms) =>
+  new Date(ms).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const formatDeadlineDay = (ms) =>
+  new Date(ms).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+const makeDateOption = (dateStr, timeLabel) => ({
+  id: `${dateStr}-${timeLabel.replace(/\s+/g, '')}`,
+  dateStr,
+  timeLabel,
+  tag: '',
+});
+// Every day (or weekday) between two dates, capped at 62 options
+const buildDateRange = (startStr, endStr, timeLabel, weekdaysOnly = true) => {
+  if (!startStr || !endStr) return [];
+  const out = [];
+  const d = parseYmd(startStr);
+  const end = parseYmd(endStr);
+  while (d <= end && out.length < 62) {
+    const dow = d.getDay();
+    if (!weekdaysOnly || (dow !== 0 && dow !== 6)) out.push(makeDateOption(ymd(d), timeLabel));
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+};
+const slugify = (s) =>
+  (s || 'lunch').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'lunch';
+const newEventId = (title) => `${slugify(title)}-${Math.random().toString(36).slice(2, 6)}`;
 const FOOD_PLACE_TYPES = ['restaurant', 'food', 'bar', 'cafe', 'meal_takeaway', 'meal_delivery', 'bakery', 'diner', 'pub'];
 
 const isFoodPlace = (types = []) =>
@@ -120,7 +233,9 @@ const newPlacesSessionToken = () =>
 // Autocomplete restricted to a 10-mile circle around Danbury; non-food results are dropped.
 // Guide searches (restricted = false) only bias toward Danbury so guide spots slightly
 // farther out (e.g. Little Pub in Wilton) can still be found.
-const searchRestaurantPlaces = async (input, sessionToken, restricted = true) => {
+const searchRestaurantPlaces = async (input, sessionToken, restricted = true, center = DANBURY_CENTER, radiusMiles = 10) => {
+  const circleCenter = { latitude: center.latitude, longitude: center.longitude };
+  const radiusMeters = Math.min(50000, Math.round(Math.min(radiusMiles, MAX_RADIUS_MILES) * 1609.34));
   const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY },
@@ -129,8 +244,8 @@ const searchRestaurantPlaces = async (input, sessionToken, restricted = true) =>
       sessionToken,
       includedRegionCodes: ['us'],
       ...(restricted
-        ? { locationRestriction: { circle: { center: SEARCH_CENTER, radius: SEARCH_RADIUS_METERS } } }
-        : { locationBias: { circle: { center: SEARCH_CENTER, radius: 30000 } } }),
+        ? { locationRestriction: { circle: { center: circleCenter, radius: radiusMeters } } }
+        : { locationBias: { circle: { center: circleCenter, radius: 50000 } } }),
     }),
   });
   if (!res.ok) throw new Error(`Places search failed (${res.status})`);
@@ -142,6 +257,25 @@ const searchRestaurantPlaces = async (input, sessionToken, restricted = true) =>
       placeId: p.placeId,
       mainText: p.structuredFormat?.mainText?.text || p.text?.text || '',
       secondaryText: p.structuredFormat?.secondaryText?.text || '',
+    }));
+};
+
+// Organizer picks the event area (a town, office, or address) from Google Maps
+const searchLocations = async (input, sessionToken) => {
+  const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY },
+    body: JSON.stringify({ input, sessionToken, includedRegionCodes: ['us'] }),
+  });
+  if (!res.ok) throw new Error(`Location search failed (${res.status})`);
+  const data = await res.json();
+  return (data.suggestions || [])
+    .map((x) => x.placePrediction)
+    .filter((x) => x && x.placeId)
+    .map((x) => ({
+      placeId: x.placeId,
+      mainText: x.structuredFormat?.mainText?.text || x.text?.text || '',
+      secondaryText: x.structuredFormat?.secondaryText?.text || '',
     }));
 };
 
@@ -250,11 +384,11 @@ const buildIcs = (ev, withReminders) => {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Cartus and Alumni//Holiday Lunch Poll//EN',
+    'PRODID:-//Team Lunch Poll//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     'BEGIN:VEVENT',
-    `UID:holiday-lunch-${toUtcStamp(ev.start)}@andy2o3.github.io`,
+    `UID:${slugify(ev.title)}-${toUtcStamp(ev.start)}@andy2o3.github.io`,
     `DTSTAMP:${toUtcStamp(new Date())}`,
     `DTSTART:${toUtcStamp(ev.start)}`,
     `DTEND:${toUtcStamp(ev.end)}`,
@@ -370,51 +504,11 @@ const HOLIDAY_LUNCH_GUIDE = [
 // Link for any restaurant (older entries without a Google place fall back to a Maps search)
 const restaurantMapsUrl = (rest) =>
   rest.mapsUrl ||
-  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${rest.name} ${rest.address || 'Danbury, CT'}`)}`;
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${rest.name} ${rest.address || ''}`.trim())}`;
 
 // ============================================================================
 // HELPER UTILITIES & DEFAULT DATA
 // ============================================================================
-
-const generateRoomId = () => {
-  return 'cartus-' + Math.random().toString(36).substring(2, 8);
-};
-
-// Maxim's Primary Directive: First 3 Weeks of December 2026 (Dec 1 – Dec 18)
-const DEFAULT_CANDIDATE_DATES = [
-  // Week 1: Dec 1 – Dec 4, 2026
-  { id: '2026-12-01', dateStr: '2026-12-01', timeLabel: '12:00 PM', tag: 'Week 1 • Kickoff', weekGroup: 1 },
-  { id: '2026-12-02', dateStr: '2026-12-02', timeLabel: '12:00 PM', tag: 'Week 1 • Midweek', weekGroup: 1 },
-  { id: '2026-12-03', dateStr: '2026-12-03', timeLabel: '12:00 PM', tag: 'Week 1', weekGroup: 1 },
-  { id: '2026-12-04', dateStr: '2026-12-04', timeLabel: '12:00 PM', tag: 'Week 1 • Friday', weekGroup: 1 },
-  // Week 2: Dec 7 – Dec 11, 2026
-  { id: '2026-12-07', dateStr: '2026-12-07', timeLabel: '12:00 PM', tag: 'Week 2', weekGroup: 2 },
-  { id: '2026-12-08', dateStr: '2026-12-08', timeLabel: '12:00 PM', tag: 'Week 2', weekGroup: 2 },
-  { id: '2026-12-09', dateStr: '2026-12-09', timeLabel: '12:00 PM', tag: 'Week 2 • Midweek', weekGroup: 2 },
-  { id: '2026-12-10', dateStr: '2026-12-10', timeLabel: '12:00 PM', tag: 'Week 2', weekGroup: 2 },
-  { id: '2026-12-11', dateStr: '2026-12-11', timeLabel: '12:00 PM', tag: 'Week 2 • Friday', weekGroup: 2 },
-  // Week 3: Dec 14 – Dec 18, 2026
-  { id: '2026-12-14', dateStr: '2026-12-14', timeLabel: '12:00 PM', tag: 'Week 3', weekGroup: 3 },
-  { id: '2026-12-15', dateStr: '2026-12-15', timeLabel: '12:00 PM', tag: 'Week 3', weekGroup: 3 },
-  { id: '2026-12-16', dateStr: '2026-12-16', timeLabel: '12:00 PM', tag: 'Week 3 • Midweek', weekGroup: 3 },
-  { id: '2026-12-17', dateStr: '2026-12-17', timeLabel: '12:00 PM', tag: 'Week 3', weekGroup: 3 },
-  { id: '2026-12-18', dateStr: '2026-12-18', timeLabel: '12:00 PM', tag: 'Week 3 • Festive Friday', weekGroup: 3 },
-];
-
-const WEEKEND_CANDIDATE_DATES = [
-  { id: '2026-12-05', dateStr: '2026-12-05', timeLabel: '12:30 PM', tag: 'Week 1 • Saturday', weekGroup: 1, isWeekend: true },
-  { id: '2026-12-06', dateStr: '2026-12-06', timeLabel: '12:30 PM', tag: 'Week 1 • Sunday', weekGroup: 1, isWeekend: true },
-  { id: '2026-12-12', dateStr: '2026-12-12', timeLabel: '12:30 PM', tag: 'Week 2 • Saturday', weekGroup: 2, isWeekend: true },
-  { id: '2026-12-13', dateStr: '2026-12-13', timeLabel: '12:30 PM', tag: 'Week 2 • Sunday', weekGroup: 2, isWeekend: true },
-];
-
-const NEW_YEAR_KICKOFF_DATES = [
-  { id: '2027-01-04', dateStr: '2027-01-04', timeLabel: '12:00 PM', tag: 'New Year 2027 • Kickoff', weekGroup: 4, isNewYear: true },
-  { id: '2027-01-05', dateStr: '2027-01-05', timeLabel: '12:00 PM', tag: 'New Year 2027', weekGroup: 4, isNewYear: true },
-  { id: '2027-01-06', dateStr: '2027-01-06', timeLabel: '12:00 PM', tag: 'New Year 2027', weekGroup: 4, isNewYear: true },
-  { id: '2027-01-07', dateStr: '2027-01-07', timeLabel: '12:00 PM', tag: 'New Year 2027', weekGroup: 4, isNewYear: true },
-  { id: '2027-01-08', dateStr: '2027-01-08', timeLabel: '12:00 PM', tag: 'New Year 2027 • Friday', weekGroup: 4, isNewYear: true },
-];
 
 const AVATAR_COLORS = [
   'bg-[#005EB8] text-white',
@@ -569,6 +663,734 @@ const HangingOrnaments = () => (
   </div>
 );
 
+// ---------- Other theme artwork ----------
+const WinterSnowflakeArt = ({ className = '' }) => (
+  <svg viewBox="0 0 200 200" className={className} role="img" aria-label="Snowflake">
+    <circle cx="100" cy="100" r="74" fill="#bae6fd" opacity="0.14" />
+    <g stroke="#e0f2fe" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" fill="none">
+      {[0, 60, 120].map((a) => (
+        <g key={a} transform={`rotate(${a} 100 100)`}>
+          <line x1="100" y1="28" x2="100" y2="172" />
+          <polyline points="84,44 100,58 116,44" />
+          <polyline points="84,156 100,142 116,156" />
+          <polyline points="89,72 100,82 111,72" />
+          <polyline points="89,128 100,118 111,128" />
+        </g>
+      ))}
+    </g>
+    <circle cx="100" cy="100" r="9" fill="#ffffff" />
+  </svg>
+);
+
+const SummerSunArt = ({ className = '' }) => (
+  <svg viewBox="0 0 200 200" className={className} role="img" aria-label="Sun with sunglasses">
+    <g stroke="#fde68a" strokeWidth="8" strokeLinecap="round">
+      {Array.from({ length: 12 }, (_, i) => i * 30).map((a) => (
+        <line key={a} x1="100" y1="16" x2="100" y2="40" transform={`rotate(${a} 100 100)`} />
+      ))}
+    </g>
+    <circle cx="100" cy="100" r="48" fill="#facc15" />
+    <circle cx="86" cy="84" r="14" fill="#fef08a" opacity="0.5" />
+    <rect x="68" y="88" width="28" height="17" rx="7" fill="#1f2937" />
+    <rect x="104" y="88" width="28" height="17" rx="7" fill="#1f2937" />
+    <line x1="96" y1="94" x2="104" y2="94" stroke="#1f2937" strokeWidth="4" />
+    <path d="M80 118 Q 100 136 120 118" stroke="#9a3412" strokeWidth="5" fill="none" strokeLinecap="round" />
+  </svg>
+);
+
+const THEMES = {
+  christmas: {
+    hero: 'from-[#7A1414]/90 via-[#A51C22]/90 to-[#5A0E13]/90 border-amber-300/40 pt-16 sm:pt-16',
+    blobA: 'bg-emerald-500/20',
+    blobB: 'bg-amber-300/20',
+    notes: 'text-red-50/90',
+    Art: HolidayWreathSanta,
+    artClass: 'w-24 h-24 sm:w-44 sm:h-44 shrink-0 -mt-10 sm:-mt-12 drop-shadow-xl',
+    hanging: true,
+    footer: 'text-white/70',
+    meta: '#0b2e22',
+  },
+  winter: {
+    hero: 'from-[#0B1F3A]/90 via-[#1E3A8A]/90 to-[#0E7490]/90 border-sky-200/40 pt-4 sm:pt-8',
+    blobA: 'bg-sky-300/20',
+    blobB: 'bg-indigo-300/20',
+    notes: 'text-sky-50/90',
+    Art: WinterSnowflakeArt,
+    artClass: 'w-20 h-20 sm:w-36 sm:h-36 shrink-0 drop-shadow-xl',
+    footer: 'text-white/70',
+    meta: '#0b1a33',
+  },
+  summer: {
+    hero: 'from-[#C2410C]/90 via-[#EA580C]/90 to-[#0E7490]/90 border-amber-200/50 pt-4 sm:pt-8',
+    blobA: 'bg-teal-300/25',
+    blobB: 'bg-yellow-300/25',
+    notes: 'text-orange-50/95',
+    Art: SummerSunArt,
+    artClass: 'w-20 h-20 sm:w-36 sm:h-36 shrink-0 drop-shadow-xl',
+    footer: 'text-white/80',
+    meta: '#7c2d12',
+  },
+  plain: {
+    hero: 'from-[#0B1F3A] via-[#102A4C] to-[#004A99] border-[#00A3E0]/30 pt-4 sm:pt-8',
+    blobA: 'bg-[#00A3E0]/15',
+    blobB: 'bg-amber-400/15',
+    notes: 'text-sky-100/90',
+    Art: null,
+    artClass: '',
+    footer: 'text-slate-500',
+    meta: '#f1f5f9',
+  },
+};
+
+// Page background, browser color and background animation follow the event's theme
+const applyTheme = (theme) => {
+  try {
+    const t = THEMES[theme] ? theme : 'plain';
+    document.documentElement.setAttribute('data-theme', t);
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', THEMES[t].meta);
+    window.dispatchEvent(new CustomEvent('lunch-theme', { detail: t }));
+  } catch {}
+};
+
+// ---------- Organizer forms ----------
+const INPUT_CLS =
+  'w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#00A3E0]/50 focus:border-[#00A3E0]';
+const SMALL_BTN =
+  'inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border touch-manipulation disabled:opacity-40';
+
+const timeLabelToInput = (label = '12:00 PM') => {
+  const m = /^(\d{1,2}):(\d{2})\s*([AP]M)$/i.exec(String(label).trim());
+  if (!m) return '12:00';
+  let h = Number(m[1]) % 12;
+  if (m[3].toUpperCase() === 'PM') h += 12;
+  return `${pad2(h)}:${m[2]}`;
+};
+
+const formFromEvent = (ev) => ({
+  title: ev.title || '',
+  targetWindow: ev.targetWindow || '',
+  notes: ev.notes || '',
+  theme: ev.theme,
+  searchCenter: ev.searchCenter,
+  searchRadiusMiles: ev.searchRadiusMiles,
+  deadlineLocal: msToLocalInput(ev.restaurantDeadlineMs),
+  timeInput: timeLabelToInput(ev.defaultTimeLabel),
+  guideEnabled: ev.guideEnabled,
+});
+
+const formToSettings = (form) => {
+  const deadline = new Date(form.deadlineLocal).getTime();
+  return {
+    title: form.title.trim() || 'Team Lunch',
+    targetWindow: form.targetWindow.trim(),
+    notes: form.notes.trim(),
+    theme: THEME_KEYS.includes(form.theme) ? form.theme : 'plain',
+    searchCenter: form.searchCenter,
+    searchRadiusMiles: Math.max(1, Math.min(MAX_RADIUS_MILES, Number(form.searchRadiusMiles) || 10)),
+    restaurantDeadlineMs: Number.isFinite(deadline) ? deadline : DEFAULT_EVENT_SETTINGS.restaurantDeadlineMs,
+    defaultTimeLabel: timeInputToLabel(form.timeInput || '12:00'),
+    guideEnabled: Boolean(form.guideEnabled),
+  };
+};
+
+const Field = ({ label, hint, children }) => (
+  <label className="block">
+    <span className="block text-xs font-bold text-slate-700 mb-1">{label}</span>
+    {children}
+    {hint && <span className="block text-[11px] text-slate-500 mt-1">{hint}</span>}
+  </label>
+);
+
+// Search Google Maps for the town / office the restaurant search is centered on
+const LocationPicker = ({ onPick }) => {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const tokenRef = useRef(newPlacesSessionToken());
+
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 3) {
+      setResults([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setBusy(true);
+      setError('');
+      try {
+        const r = await searchLocations(term, tokenRef.current);
+        if (!cancelled) setResults(r.slice(0, 5));
+      } catch (err) {
+        console.error(err);
+        if (!cancelled) setError('Location search is unavailable right now.');
+      } finally {
+        if (!cancelled) setBusy(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q]);
+
+  const pick = async (r) => {
+    try {
+      const d = await getRestaurantPlaceDetails(r.placeId, tokenRef.current);
+      tokenRef.current = newPlacesSessionToken();
+      if (!d.location) throw new Error('No coordinates for that place');
+      const region = (r.secondaryText || '').replace(/,?\s*USA$/, '').trim();
+      onPick({
+        latitude: d.location.latitude,
+        longitude: d.location.longitude,
+        label: region ? `${r.mainText}, ${region}` : r.mainText || d.name,
+      });
+      setQ('');
+      setResults([]);
+    } catch (err) {
+      console.error(err);
+      setError('Could not load that place. Try another.');
+    }
+  };
+
+  return (
+    <div className="relative">
+      <input
+        className={INPUT_CLS}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Search a town, office, or address…"
+        autoComplete="off"
+      />
+      {busy && <p className="text-[11px] text-slate-500 mt-1">Searching…</p>}
+      {error && <p className="text-[11px] text-rose-600 mt-1">{error}</p>}
+      {results.length > 0 && (
+        <ul className="mt-1 rounded-xl border border-slate-200 bg-white shadow-lg divide-y divide-slate-100 overflow-hidden">
+          {results.map((r) => (
+            <li key={r.placeId}>
+              <button
+                type="button"
+                onClick={() => pick(r)}
+                className="w-full text-left px-3 py-2 hover:bg-slate-50 touch-manipulation"
+              >
+                <span className="block text-sm font-semibold text-slate-800">{r.mainText}</span>
+                {r.secondaryText && <span className="block text-[11px] text-slate-500">{r.secondaryText}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+// Name, description, theme, search area, deadline, default time, guide
+const EventDetailsFields = ({ form, setForm }) => {
+  const set = (k) => (e) => {
+    const v = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    setForm((f) => ({ ...f, [k]: v }));
+  };
+  return (
+    <div className="grid gap-3 sm:grid-cols-2">
+      <Field label="Event name">
+        <input className={INPUT_CLS} value={form.title} onChange={set('title')} maxLength={80} placeholder="Team Lunch" />
+      </Field>
+      <Field label="Badge (optional)" hint="Short line above the name, e.g. “First 3 weeks of June”">
+        <input className={INPUT_CLS} value={form.targetWindow} onChange={set('targetWindow')} maxLength={80} />
+      </Field>
+      <div className="sm:col-span-2">
+        <Field label="Description">
+          <textarea
+            className={`${INPUT_CLS} min-h-[84px]`}
+            rows={3}
+            value={form.notes}
+            onChange={set('notes')}
+            maxLength={600}
+            placeholder="Tell people what this lunch is for and when to respond by."
+          />
+        </Field>
+      </div>
+      <div className="sm:col-span-2">
+        <span className="block text-xs font-bold text-slate-700 mb-1">Theme</span>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {THEME_KEYS.map((k) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setForm((f) => ({ ...f, theme: k }))}
+              className={`min-h-[44px] px-2 py-2 rounded-xl text-xs font-bold border touch-manipulation ${
+                form.theme === k ? 'border-[#0B1F3A] ring-2 ring-[#00A3E0]/50' : 'border-slate-200'
+              } bg-gradient-to-br ${THEMES[k].hero.split(' ').filter((c) => /^(from|via|to)-/.test(c)).join(' ')} text-white`}
+            >
+              {THEME_LABELS[k]}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="sm:col-span-2 rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+        <p className="text-xs font-bold text-slate-700">
+          Restaurant search area: <span className="text-[#0B1F3A]">{form.searchRadiusMiles} miles around {form.searchCenter.label}</span>
+        </p>
+        <LocationPicker onPick={(c) => setForm((f) => ({ ...f, searchCenter: c }))} />
+        <label className="flex items-center gap-3">
+          <span className="text-xs text-slate-600 shrink-0">Radius</span>
+          <input
+            type="range"
+            min="1"
+            max={MAX_RADIUS_MILES}
+            value={form.searchRadiusMiles}
+            onChange={(e) => setForm((f) => ({ ...f, searchRadiusMiles: Number(e.target.value) }))}
+            className="flex-1"
+          />
+          <span className="text-xs font-bold text-slate-700 w-14 text-right">{form.searchRadiusMiles} mi</span>
+        </label>
+      </div>
+      <Field label="Restaurant voting closes">
+        <input type="datetime-local" className={INPUT_CLS} value={form.deadlineLocal} onChange={set('deadlineLocal')} />
+      </Field>
+      <Field label="Default lunch time">
+        <input type="time" className={INPUT_CLS} value={form.timeInput} onChange={set('timeInput')} />
+      </Field>
+      <label className="sm:col-span-2 flex items-center gap-2 text-sm text-slate-700">
+        <input type="checkbox" checked={form.guideEnabled} onChange={set('guideEnabled')} className="w-4 h-4" />
+        Show the Greater Danbury Quick Suggestion Guide
+      </label>
+    </div>
+  );
+};
+
+const DateRangeFields = ({ range, setRange }) => (
+  <div className="grid gap-3 grid-cols-2">
+    <Field label="First day">
+      <input type="date" className={INPUT_CLS} value={range.start} onChange={(e) => setRange((r) => ({ ...r, start: e.target.value }))} />
+    </Field>
+    <Field label="Last day">
+      <input type="date" className={INPUT_CLS} value={range.end} min={range.start || undefined} onChange={(e) => setRange((r) => ({ ...r, end: e.target.value }))} />
+    </Field>
+    <label className="col-span-2 flex items-center gap-2 text-sm text-slate-700">
+      <input type="checkbox" checked={range.weekdaysOnly} onChange={(e) => setRange((r) => ({ ...r, weekdaysOnly: e.target.checked }))} className="w-4 h-4" />
+      Weekdays only (skip Saturdays and Sundays)
+    </label>
+  </div>
+);
+
+// Organizer dashboard → Event settings (opens collapsed; form starts from the saved event)
+const EventSettingsPanel = ({ eventData, onSave, onAddDates, onRemoveDate }) => {
+  const [form, setForm] = useState(() => formFromEvent(eventData));
+  const [saving, setSaving] = useState(false);
+  const [single, setSingle] = useState({ date: '', time: timeLabelToInput(eventData.defaultTimeLabel) });
+  const [range, setRange] = useState({ start: '', end: '', weekdaysOnly: true });
+  const sortedDates = [...eventData.dates].sort((a, b) => a.dateStr.localeCompare(b.dateStr) || a.id.localeCompare(b.id));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(formToSettings(form));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="p-3 sm:p-4 space-y-5 border-t border-slate-200">
+      <EventDetailsFields form={form} setForm={setForm} />
+      <div className="flex justify-end">
+        <button type="button" onClick={save} disabled={saving} className={`${SMALL_BTN} bg-[#0B1F3A] text-white border-[#0B1F3A] hover:bg-[#102A4C]`}>
+          <Check className="w-3.5 h-3.5" /> {saving ? 'Saving…' : 'Save settings'}
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        <h4 className="text-xs font-extrabold text-[#0B1F3A] uppercase tracking-wide">Date options ({sortedDates.length})</h4>
+        <div className="rounded-xl border border-slate-200 divide-y divide-slate-100 max-h-64 overflow-y-auto">
+          {sortedDates.map((d) => {
+            const f = formatDateParts(d.dateStr);
+            return (
+              <div key={d.id} className="flex items-center justify-between gap-2 px-3 py-1.5">
+                <span className="text-sm text-slate-700">
+                  {f.weekday}, {f.month} {f.day} · {d.timeLabel}
+                  {eventData.lockedDateId === d.id && <span className="ml-2 text-[11px] font-bold text-emerald-700">Locked</span>}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveDate(d.id)}
+                  className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 touch-manipulation"
+                  aria-label={`Remove ${f.month} ${f.day}`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            );
+          })}
+          {sortedDates.length === 0 && <p className="p-3 text-sm text-slate-500">No dates yet — add some below.</p>}
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+            <p className="text-xs font-bold text-slate-700">Add one date</p>
+            <div className="grid grid-cols-2 gap-2">
+              <input type="date" className={INPUT_CLS} value={single.date} onChange={(e) => setSingle((x) => ({ ...x, date: e.target.value }))} />
+              <input type="time" className={INPUT_CLS} value={single.time} onChange={(e) => setSingle((x) => ({ ...x, time: e.target.value }))} />
+            </div>
+            <button
+              type="button"
+              disabled={!single.date}
+              onClick={() => onAddDates([makeDateOption(single.date, timeInputToLabel(single.time || '12:00'))])}
+              className={`${SMALL_BTN} w-full bg-white text-slate-700 border-slate-300 hover:bg-slate-100`}
+            >
+              <Plus className="w-3.5 h-3.5" /> Add date
+            </button>
+          </div>
+          <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+            <p className="text-xs font-bold text-slate-700">Add a range (at the default lunch time)</p>
+            <DateRangeFields range={range} setRange={setRange} />
+            <button
+              type="button"
+              disabled={!range.start}
+              onClick={() => onAddDates(buildDateRange(range.start, range.end || range.start, eventData.defaultTimeLabel, range.weekdaysOnly))}
+              className={`${SMALL_BTN} w-full bg-white text-slate-700 border-slate-300 hover:bg-slate-100`}
+            >
+              <Plus className="w-3.5 h-3.5" /> Add range
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const eventUrl = (id) =>
+  `${window.location.origin}${window.location.pathname}${id === DEFAULT_ROOM_ID ? '' : `?room=${encodeURIComponent(id)}`}`;
+const hubUrl = () => `${window.location.origin}${window.location.pathname}?admin`;
+
+const blankCreateForm = () =>
+  formFromEvent(
+    normalizeEvent({
+      title: '',
+      theme: 'plain',
+      restaurantDeadlineMs: Date.now() + 14 * 24 * 3600 * 1000,
+    })
+  );
+
+// ?admin — list, create, duplicate and delete events; Super Admin also approves organizers
+const OrganizerHub = ({ user, googleEmail, isSuperAdmin, isApprovedOrganizer, rolesReady, onSignIn, onSignOut, triggerToast }) => {
+  const [events, setEvents] = useState([]);
+  const [loadingEvents, setLoadingEvents] = useState(true);
+  const [form, setForm] = useState(blankCreateForm);
+  const [range, setRange] = useState({ start: '', end: '', weekdaysOnly: true });
+  const [creating, setCreating] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [organizers, setOrganizers] = useState([]);
+  const [newOrganizer, setNewOrganizer] = useState('');
+  const createRef = useRef(null);
+  const canUse = Boolean(googleEmail) && isApprovedOrganizer && Boolean(user);
+  const uid = user?.uid;
+
+  useEffect(() => {
+    document.title = 'Organizer hub · Team Lunch';
+  }, []);
+
+  useEffect(() => {
+    if (!canUse) return;
+    setLoadingEvents(true);
+    const col = collection(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms');
+    const q = isSuperAdmin ? col : query(col, where('organizerUids', 'array-contains', uid));
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => list.push({ id: d.id, createdAtMs: d.data().createdAtMs || 0, ...normalizeEvent(d.data()) }));
+        list.sort((a, b) => b.createdAtMs - a.createdAtMs || a.title.localeCompare(b.title));
+        setEvents(list);
+        setLoadingEvents(false);
+      },
+      (err) => {
+        console.error('Error loading events:', err);
+        setLoadingEvents(false);
+      }
+    );
+  }, [canUse, isSuperAdmin, uid]);
+
+  useEffect(() => {
+    if (!canUse || !isSuperAdmin) return;
+    return onSnapshot(
+      collection(db, 'artifacts', appId, 'organizers'),
+      (snap) => {
+        const list = [];
+        snap.forEach((d) => list.push({ email: d.id, ...d.data() }));
+        list.sort((a, b) => a.email.localeCompare(b.email));
+        setOrganizers(list);
+      },
+      (err) => console.error('Error loading organizers:', err)
+    );
+  }, [canUse, isSuperAdmin]);
+
+  const copyText = async (text, msg) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      triggerToast(msg);
+    } catch {
+      triggerToast('Could not copy. Long-press the link to copy it.', 'error');
+    }
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    const settings = formToSettings(form);
+    if (!form.title.trim()) {
+      triggerToast('Give the event a name.', 'error');
+      return;
+    }
+    const dates = buildDateRange(range.start, range.end || range.start, settings.defaultTimeLabel, range.weekdaysOnly);
+    if (!dates.length) {
+      triggerToast('Pick a date range with at least one day.', 'error');
+      return;
+    }
+    const id = newEventId(settings.title);
+    setCreating(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', id), {
+        ...settings,
+        dates,
+        location: '',
+        restaurants: [],
+        restaurantPollForceClosed: false,
+        lockedDateId: null,
+        sharedUrl: '',
+        organizerUids: [uid],
+        createdAtMs: Date.now(),
+      });
+      window.location.href = eventUrl(id);
+    } catch (err) {
+      console.error('Error creating event:', err);
+      triggerToast('Could not create the event.', 'error');
+      setCreating(false);
+    }
+  };
+
+  const handleDuplicate = (ev) => {
+    setForm({ ...formFromEvent(ev), title: `${ev.title} (copy)` });
+    setRange({ start: '', end: '', weekdaysOnly: true });
+    triggerToast('Copied the settings — pick new dates below.', 'info');
+    setTimeout(() => createRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  };
+
+  const handleDelete = async (ev) => {
+    setDeletingId(ev.id);
+    try {
+      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', ev.id);
+      const votes = await getDocs(collection(roomRef, 'votes'));
+      await Promise.all(
+        votes.docs.map(async (v) => {
+          await Promise.all([
+            deleteDoc(doc(db, 'artifacts', appId, 'private_contacts', `${ev.id}__${v.id}`)).catch(() => {}),
+            deleteDoc(doc(db, 'artifacts', appId, 'private_regrets', `${ev.id}__${v.id}`)).catch(() => {}),
+          ]);
+          await deleteDoc(v.ref);
+        })
+      );
+      await deleteDoc(roomRef);
+      triggerToast(`Deleted “${ev.title}”.`);
+    } catch (err) {
+      console.error('Error deleting event:', err);
+      triggerToast('Could not delete that event.', 'error');
+    } finally {
+      setDeletingId(null);
+      setConfirmDeleteId(null);
+    }
+  };
+
+  const handleAddOrganizer = async (e) => {
+    e.preventDefault();
+    const email = newOrganizer.trim().toLowerCase();
+    if (!isValidEmail(email)) {
+      triggerToast('Enter a valid Google email address.', 'error');
+      return;
+    }
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'organizers', email), { email, addedAtMs: Date.now() });
+      setNewOrganizer('');
+      triggerToast(`${email} can now sign in as an organizer.`);
+    } catch (err) {
+      console.error('Error adding organizer:', err);
+      triggerToast('Could not add that organizer.', 'error');
+    }
+  };
+
+  const handleRemoveOrganizer = async (email) => {
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'organizers', email));
+      triggerToast(`Removed ${email}.`);
+    } catch (err) {
+      console.error('Error removing organizer:', err);
+      triggerToast('Could not remove that organizer.', 'error');
+    }
+  };
+
+  const card = 'rounded-2xl sm:rounded-3xl bg-white/95 border border-slate-200 shadow-md p-4 sm:p-6';
+
+  return (
+    <main className="relative z-[1] max-w-3xl mx-auto px-3 sm:px-6 py-5 sm:py-8 space-y-5 text-slate-800">
+      <section className="rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#0B1F3A] via-[#102A4C] to-[#004A99] text-white p-4 sm:p-6 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-extrabold">Organizer hub</h1>
+            <p className="text-xs sm:text-sm text-sky-100/90 mt-1">Create lunch polls from the template, reuse past events, and manage organizers.</p>
+          </div>
+          {googleEmail && (
+            <button type="button" onClick={onSignOut} className="shrink-0 inline-flex items-center gap-1 text-xs underline underline-offset-2 text-sky-100">
+              <LogOut className="w-3.5 h-3.5" /> Sign out
+            </button>
+          )}
+        </div>
+        {googleEmail && (
+          <p className="mt-3 text-[11px] text-sky-100/80">
+            Signed in as {googleEmail}
+            {isSuperAdmin ? ' · Super Admin' : isApprovedOrganizer ? ' · Organizer' : ''}
+          </p>
+        )}
+      </section>
+
+      {!googleEmail && (
+        <section className={`${card} text-center space-y-3`}>
+          <p className="text-sm text-slate-600">Organizers sign in with the Google account the Super Admin approved.</p>
+          <button type="button" onClick={onSignIn} className={`${SMALL_BTN} bg-[#0B1F3A] text-white border-[#0B1F3A] px-5`}>
+            Sign in with Google
+          </button>
+        </section>
+      )}
+
+      {googleEmail && rolesReady && !isApprovedOrganizer && (
+        <section className={`${card} text-center space-y-2`}>
+          <p className="text-sm font-bold text-slate-800">This Google account isn't an approved organizer yet.</p>
+          <p className="text-xs text-slate-500">Ask the Super Admin to add {googleEmail}, then sign in again.</p>
+        </section>
+      )}
+
+      {canUse && (
+        <>
+          <section className={card}>
+            <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A] mb-3">
+              {isSuperAdmin ? 'All events' : 'Your events'} ({events.length})
+            </h2>
+            {loadingEvents && <p className="text-sm text-slate-500">Loading…</p>}
+            {!loadingEvents && events.length === 0 && <p className="text-sm text-slate-500">No events yet. Create one below.</p>}
+            <div className="space-y-2">
+              {events.map((ev) => {
+                const sorted = [...ev.dates].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+                const first = sorted[0] && formatDateParts(sorted[0].dateStr);
+                const last = sorted[sorted.length - 1] && formatDateParts(sorted[sorted.length - 1].dateStr);
+                return (
+                  <div key={ev.id} className="rounded-xl border border-slate-200 p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-extrabold text-slate-800 truncate">{ev.title}</p>
+                        <p className="text-[11px] text-slate-500">
+                          {THEME_LABELS[ev.theme]} · {ev.dates.length} dates
+                          {first ? ` · ${first.month} ${first.day}–${last.month} ${last.day}` : ''} · {ev.searchCenter.label}
+                          {ev.lockedDateId ? ' · 🔒 date locked' : ''}
+                        </p>
+                      </div>
+                      <a href={eventUrl(ev.id)} className={`${SMALL_BTN} shrink-0 bg-[#0B1F3A] text-white border-[#0B1F3A]`}>
+                        Open <ChevronRight className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button type="button" onClick={() => copyText(eventUrl(ev.id), 'Event link copied.')} className={`${SMALL_BTN} bg-white text-slate-700 border-slate-300`}>
+                        <Copy className="w-3.5 h-3.5" /> Copy link
+                      </button>
+                      <button type="button" onClick={() => handleDuplicate(ev)} className={`${SMALL_BTN} bg-white text-slate-700 border-slate-300`}>
+                        <Plus className="w-3.5 h-3.5" /> Use as template
+                      </button>
+                      {confirmDeleteId === ev.id ? (
+                        <>
+                          <button
+                            type="button"
+                            disabled={deletingId === ev.id}
+                            onClick={() => handleDelete(ev)}
+                            className={`${SMALL_BTN} bg-rose-600 text-white border-rose-600`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" /> {deletingId === ev.id ? 'Deleting…' : 'Delete event + all responses'}
+                          </button>
+                          <button type="button" onClick={() => setConfirmDeleteId(null)} className={`${SMALL_BTN} bg-white text-slate-700 border-slate-300`}>
+                            Keep it
+                          </button>
+                        </>
+                      ) : (
+                        <button type="button" onClick={() => setConfirmDeleteId(ev.id)} className={`${SMALL_BTN} bg-white text-rose-700 border-rose-200`}>
+                          <Trash2 className="w-3.5 h-3.5" /> Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className={card} ref={createRef}>
+            <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A] mb-3">Create a new event</h2>
+            <form onSubmit={handleCreate} className="space-y-4">
+              <EventDetailsFields form={form} setForm={setForm} />
+              <div>
+                <p className="text-xs font-bold text-slate-700 mb-2">Date options to vote on</p>
+                <DateRangeFields range={range} setRange={setRange} />
+                <p className="text-[11px] text-slate-500 mt-1">You can add or remove single dates later from the event's organizer dashboard.</p>
+              </div>
+              <button type="submit" disabled={creating} className={`${SMALL_BTN} w-full bg-[#0B1F3A] text-white border-[#0B1F3A] min-h-[48px] text-sm`}>
+                <Sparkles className="w-4 h-4" /> {creating ? 'Creating…' : 'Create event'}
+              </button>
+            </form>
+          </section>
+
+          {isSuperAdmin && (
+            <section className={card}>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A] mb-1">Organizers</h2>
+              <p className="text-xs text-slate-500 mb-3">People you add can sign in with Google, create events, and manage only their own events.</p>
+              <form onSubmit={handleAddOrganizer} className="flex gap-2 mb-3">
+                <input
+                  type="email"
+                  className={INPUT_CLS}
+                  value={newOrganizer}
+                  onChange={(e) => setNewOrganizer(e.target.value)}
+                  placeholder="name@gmail.com"
+                  autoComplete="off"
+                />
+                <button type="submit" className={`${SMALL_BTN} shrink-0 bg-[#0B1F3A] text-white border-[#0B1F3A] min-h-[44px]`}>
+                  <UserPlus className="w-3.5 h-3.5" /> Add
+                </button>
+              </form>
+              <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
+                {organizers.length === 0 && <p className="p-3 text-sm text-slate-500">No organizers yet — only you.</p>}
+                {organizers.map((o) => (
+                  <div key={o.email} className="flex items-center justify-between gap-2 px-3 py-2">
+                    <span className="text-sm text-slate-700 truncate">{o.email}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveOrganizer(o.email)}
+                      className="p-2 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                      aria-label={`Remove ${o.email}`}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
+      )}
+
+      <p className="text-center text-xs text-slate-500">
+        <a href={eventUrl(DEFAULT_ROOM_ID)} className="underline underline-offset-2">Back to the lunch poll</a>
+      </p>
+    </main>
+  );
+};
+
 const CartusITEmblem = () => (
   <svg viewBox="0 0 64 64" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <rect width="64" height="64" rx="16" fill="url(#cartusGrad)" />
@@ -601,11 +1423,23 @@ function App() {
   const [roomId, setRoomId] = useState(() => {
     try {
       const params = new URLSearchParams(window.location.search);
-      return params.get('room') || 'cartus-it-2026';
+      return params.get('room') || DEFAULT_ROOM_ID;
     } catch {
-      return 'cartus-it-2026';
+      return DEFAULT_ROOM_ID;
     }
   });
+  // ?admin opens the organizer hub instead of a poll
+  const [view, setView] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).has('admin') ? 'hub' : 'poll';
+    } catch {
+      return 'poll';
+    }
+  });
+  const [roomStatus, setRoomStatus] = useState('loading'); // loading | ready | missing
+  // Per-event browser memory (the original poll keeps its earlier keys)
+  const profileStorageKey = roomId === DEFAULT_ROOM_ID ? 'cartus_it_saved_profile_2026' : `lunchpoll_${roomId}_profile`;
+  const proofStorageKey = roomId === DEFAULT_ROOM_ID ? 'cartus_it_identity_proof_2026' : `lunchpoll_${roomId}_proof`;
 
   // Firebase Auth & Connection State
   const [user, setUser] = useState(null);
@@ -615,17 +1449,7 @@ function App() {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   // Event Metadata State (Synced in real time with Firebase Firestore)
-  const [eventData, setEventData] = useState({
-    title: 'Holiday Lunch 2026',
-    targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
-    location: 'TBD — Vote on Restaurant Suggestions Below!',
-    notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
-    dates: DEFAULT_CANDIDATE_DATES,
-    restaurants: [],
-    restaurantPollForceClosed: false,
-    lockedDateId: null,
-    sharedUrl: '',
-  });
+  const [eventData, setEventData] = useState(() => normalizeEvent({ title: 'Loading…' }));
 
   // All Participants State (Synced in real time from Firestore subcollection)
   const [participants, setParticipants] = useState([]);
@@ -655,7 +1479,7 @@ function App() {
   // Which roster entry this device submitted (lets it edit that person's details later)
   const [savedProfileKey, setSavedProfileKey] = useState(() => {
     try {
-      return localStorage.getItem('cartus_it_saved_profile_2026') || '';
+      return localStorage.getItem(profileStorageKey) || '';
     } catch {
       return '';
     }
@@ -663,13 +1487,13 @@ function App() {
   // Proof of identity for this browser (hash of name + phone/email) used to edit details from a new device
   const [identityProof, setIdentityProof] = useState(() => {
     try {
-      return localStorage.getItem('cartus_it_identity_proof_2026') || '';
+      return localStorage.getItem(proofStorageKey) || '';
     } catch {
       return '';
     }
   });
   // Browsers from before "Submit" existed only remembered the name; adopt that entry once on load
-  const legacyNameRef = useRef(savedProfileKey ? '' : voterName);
+  const legacyNameRef = useRef(savedProfileKey || roomId !== DEFAULT_ROOM_ID ? '' : voterName);
   const [participantsLoaded, setParticipantsLoaded] = useState(false);
   const [showCancelRsvp, setShowCancelRsvp] = useState(false);
   const [showFullResults, setShowFullResults] = useState(false);
@@ -693,8 +1517,12 @@ function App() {
   const [showGuide, setShowGuide] = useState(true);
   const [calendarReminders, setCalendarReminders] = useState(true);
 
-  // Organizer (Google sign-in) state
-  const [isOrganizer, setIsOrganizer] = useState(false);
+  // Roles (Google sign-in): Super Admin manages everything; approved organizers manage their own events
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [isApprovedOrganizer, setIsApprovedOrganizer] = useState(false);
+  const [googleEmail, setGoogleEmail] = useState('');
+  const [rolesReady, setRolesReady] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
 
   // "Can't make it" form + organizer-only view of private reasons
   const [showCantMakeItForm, setShowCantMakeItForm] = useState(false);
@@ -705,15 +1533,13 @@ function App() {
 
   // Modal & UI Feedback State
   const [showShareModal, setShowShareModal] = useState(false);
-  const [showAddDateModal, setShowAddDateModal] = useState(false);
-  const [showNewPollModal, setShowNewPollModal] = useState(false);
-  const [newDateStr, setNewDateStr] = useState('2026-12-10');
-  const [newTimeLabel, setNewTimeLabel] = useState('12:00 PM');
-  const [newPollTitle, setNewPollTitle] = useState('Holiday Lunch 2026');
-  const [newPollLocation, setNewPollLocation] = useState('');
   const [shareUrlInput, setShareUrlInput] = useState('');
   const [copiedType, setCopiedType] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
+
+  // Organizer of THIS event: Super Admin, or an approved organizer listed on the event
+  const isOrganizer =
+    isSuperAdmin || (isApprovedOrganizer && Boolean(user) && eventData.organizerUids.includes(user.uid));
 
   // Live clock tick every 30s to evaluate deadline automatically
   useEffect(() => {
@@ -741,8 +1567,8 @@ function App() {
   useEffect(() => {
     try {
       localStorage.setItem('cartus_it_voter_email_2026', voterEmail);
-      localStorage.setItem('cartus_it_saved_profile_2026', savedProfileKey);
-      localStorage.setItem('cartus_it_identity_proof_2026', identityProof);
+      localStorage.setItem(profileStorageKey, savedProfileKey);
+      localStorage.setItem(proofStorageKey, identityProof);
     } catch {
       // Ignore storage restrictions
     }
@@ -768,12 +1594,30 @@ function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
-        setIsOrganizer(false);
+        setIsSuperAdmin(false);
+        setIsApprovedOrganizer(false);
+        setGoogleEmail('');
         signInGuest();
         return;
       }
       const email = (currentUser.email || '').trim().toLowerCase();
-      setIsOrganizer(Boolean(email) && currentUser.emailVerified && (await sha256Hex(email)) === ORGANIZER_EMAIL_SHA256);
+      const verified = Boolean(email) && currentUser.emailVerified && !currentUser.isAnonymous;
+      setGoogleEmail(verified ? email : '');
+      const superAdmin = verified && (await sha256Hex(email)) === SUPER_ADMIN_EMAIL_SHA256;
+      setIsSuperAdmin(superAdmin);
+      if (superAdmin) {
+        setIsApprovedOrganizer(true);
+      } else if (verified) {
+        try {
+          const snap = await getDoc(doc(db, 'artifacts', appId, 'organizers', email));
+          setIsApprovedOrganizer(snap.exists());
+        } catch {
+          setIsApprovedOrganizer(false);
+        }
+      } else {
+        setIsApprovedOrganizer(false);
+      }
+      setRolesReady(true);
     });
     return () => unsubscribe();
   }, []);
@@ -790,62 +1634,17 @@ function App() {
       roomDocRef,
       async (snap) => {
         if (snap.exists()) {
-          const data = snap.data();
-          // One-time rename of text saved before the "Cartus and Alumni" rebrand
-          const renamed = {};
-          ['title', 'notes'].forEach((key) => {
-            if (typeof data[key] === 'string' && data[key].includes('Cartus IT')) {
-              renamed[key] = data[key].split('Cartus IT').join('Cartus and Alumni');
-            }
-          });
-          // One-time retitle of the saved poll name
-          const currentTitle = renamed.title || data.title || '';
-          if (currentTitle.includes('Holiday & New Year Lunch 2026–2027') || currentTitle.includes('Pre AI Takeover')) {
-            renamed.title = 'Holiday Lunch 2026';
-          }
-          if (Object.keys(renamed).length > 0) {
-            Object.assign(data, renamed);
-            updateDoc(roomDocRef, renamed).catch((e) => console.error('Error renaming room text:', e));
-          }
-          setEventData({
-            title: data.title || 'Holiday Lunch 2026',
-            targetWindow: data.targetWindow || 'First 3 Weeks of December 2026 • Requested by Maxim',
-            location: data.location || 'TBD — Vote on Restaurant Suggestions Below!',
-            notes:
-              data.notes ||
-              'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
-            dates: Array.isArray(data.dates) && data.dates.length > 0 ? data.dates : DEFAULT_CANDIDATE_DATES,
-            restaurants: Array.isArray(data.restaurants) ? data.restaurants : [],
-            restaurantPollForceClosed: Boolean(data.restaurantPollForceClosed),
-            lockedDateId: data.lockedDateId || null,
-            sharedUrl: data.sharedUrl || '',
-          });
+          setEventData(normalizeEvent(snap.data()));
+          setRoomStatus('ready');
           setSyncStatus('connected');
         } else {
-          // Initialize default shared room in Firestore if it doesn't exist yet
-          const initialPayload = {
-            title: 'Holiday Lunch 2026',
-            targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
-            location: 'TBD — Vote on Restaurant Suggestions Below!',
-            notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
-            dates: DEFAULT_CANDIDATE_DATES,
-            restaurants: [],
-            restaurantPollForceClosed: false,
-            lockedDateId: null,
-            sharedUrl: '',
-            createdAt: serverTimestamp(),
-          };
-          try {
-            await setDoc(roomDocRef, initialPayload, { merge: true });
-            setSyncStatus('connected');
-          } catch (e) {
-            console.error('Error initializing room:', e);
-            setSyncStatus('error');
-          }
+          setRoomStatus('missing');
+          setSyncStatus('connected');
         }
       },
       (err) => {
         console.error('Firestore room listener error:', err);
+        setRoomStatus((st) => (st === 'loading' ? 'error' : st));
         setSyncStatus('error');
       }
     );
@@ -883,48 +1682,93 @@ function App() {
     };
   }, [user, roomId]);
 
-  // Organizer only: load the private "can't make it" reasons (Firestore rules block everyone else)
+  // Organizer only: private reasons + phone/email for this event (Firestore rules block everyone else).
+  // Super Admin reads the whole collections; event organizers read each person's documents.
+  const participantIdsKey = participants.map((x) => x.id).join('|');
   useEffect(() => {
     if (!isOrganizer) {
       setRegretReasons({});
-      return;
-    }
-    const unsub = onSnapshot(
-      collection(db, 'artifacts', appId, 'private_regrets'),
-      (snap) => {
-        const reasons = {};
-        snap.forEach((d) => {
-          const r = d.data();
-          if (r && r.roomId === roomId && r.reason) reasons[r.docKey] = r.reason;
-        });
-        setRegretReasons(reasons);
-      },
-      (err) => console.error('Error loading reasons:', err)
-    );
-    return () => unsub();
-  }, [isOrganizer, roomId]);
-
-  // Organizer only: load phone numbers for this room (Firestore rules block everyone else)
-  useEffect(() => {
-    if (!isOrganizer) {
       setContacts({});
       return;
     }
-    const unsub = onSnapshot(
-      collection(db, 'artifacts', appId, 'private_contacts'),
-      (snap) => {
-        const byKey = {};
-        const prefix = `${roomId}__`;
-        snap.forEach((d) => {
-          const c = d.data();
-          if (c && c.roomId === roomId && d.id.startsWith(prefix)) byKey[d.id.slice(prefix.length)] = c;
-        });
-        setContacts(byKey);
-      },
-      (err) => console.error('Error loading contacts:', err)
-    );
-    return () => unsub();
-  }, [isOrganizer, roomId]);
+    const prefix = `${roomId}__`;
+    if (isSuperAdmin) {
+      const unsubR = onSnapshot(
+        collection(db, 'artifacts', appId, 'private_regrets'),
+        (snap) => {
+          const reasons = {};
+          snap.forEach((d) => {
+            const r = d.data();
+            if (r && r.roomId === roomId && r.reason) reasons[r.docKey] = r.reason;
+          });
+          setRegretReasons(reasons);
+        },
+        (err) => console.error('Error loading reasons:', err)
+      );
+      const unsubC = onSnapshot(
+        collection(db, 'artifacts', appId, 'private_contacts'),
+        (snap) => {
+          const byKey = {};
+          snap.forEach((d) => {
+            const c = d.data();
+            if (c && c.roomId === roomId && d.id.startsWith(prefix)) byKey[d.id.slice(prefix.length)] = c;
+          });
+          setContacts(byKey);
+        },
+        (err) => console.error('Error loading contacts:', err)
+      );
+      return () => {
+        unsubR();
+        unsubC();
+      };
+    }
+    const ids = participantIdsKey ? participantIdsKey.split('|') : [];
+    const unsubs = [];
+    ids.forEach((id) => {
+      unsubs.push(
+        onSnapshot(
+          doc(db, 'artifacts', appId, 'private_contacts', prefix + id),
+          (snap) => setContacts((prev) => {
+            const next = { ...prev };
+            if (snap.exists()) next[id] = snap.data();
+            else delete next[id];
+            return next;
+          }),
+          (err) => console.error('Error loading contact:', err)
+        )
+      );
+      unsubs.push(
+        onSnapshot(
+          doc(db, 'artifacts', appId, 'private_regrets', prefix + id),
+          (snap) => setRegretReasons((prev) => {
+            const next = { ...prev };
+            const r = snap.exists() ? snap.data() : null;
+            if (r && r.reason) next[id] = r.reason;
+            else delete next[id];
+            return next;
+          }),
+          (err) => console.error('Error loading reason:', err)
+        )
+      );
+    });
+    return () => unsubs.forEach((u) => u());
+  }, [isOrganizer, isSuperAdmin, roomId, participantIdsKey]);
+
+  useEffect(() => {
+    if (view === 'hub') {
+      applyTheme('plain');
+    } else if (roomStatus === 'ready') {
+      applyTheme(eventData.theme);
+      try {
+        localStorage.setItem(`lunchpoll_theme_${roomId}`, eventData.theme);
+      } catch {}
+    }
+  }, [view, roomStatus, eventData.theme, roomId]);
+
+  // Browser tab title follows the event name
+  useEffect(() => {
+    if (roomStatus === 'ready' && view === 'poll') document.title = eventData.title;
+  }, [eventData.title, roomStatus, view]);
 
   const triggerToast =(msg, type = 'success') => {
     setToastMessage({ text: msg, type });
@@ -1314,16 +2158,19 @@ function App() {
     setTimeout(() => document.getElementById('voter-name-input')?.focus(), 50);
   };
 
-  const isDeadlinePassed = nowMs >= RESTAURANT_DEADLINE_MS;
+  const deadlineMs = eventData.restaurantDeadlineMs;
+  const deadlineLabel = formatDeadline(deadlineMs);
+  const deadlineDay = formatDeadlineDay(deadlineMs);
+  const isDeadlinePassed = nowMs >= deadlineMs;
   const isRestaurantPollClosed = eventData.restaurantPollForceClosed || isDeadlinePassed;
 
   const countdownLabel = useMemo(() => {
     if (isRestaurantPollClosed) {
       return isDeadlinePassed
-        ? 'Closed • Deadline Passed (Fri, Nov 20)'
+        ? `Closed • Deadline Passed (${deadlineLabel})`
         : 'Closed Early by Host • Restaurant Selection Locked';
     }
-    const diff = Math.max(0, RESTAURANT_DEADLINE_MS - nowMs);
+    const diff = Math.max(0, deadlineMs - nowMs);
     const totalMinutes = Math.floor(diff / 60000);
     const days = Math.floor(totalMinutes / (60 * 24));
     const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
@@ -1332,8 +2179,8 @@ function App() {
     if (days > 0) parts.push(`${days}d`);
     parts.push(`${hours}h`);
     parts.push(`${mins}m`);
-    return `Closes Fri, Nov 20, 11:59 PM (${parts.join(' ')} left)`;
-  }, [nowMs, isRestaurantPollClosed, isDeadlinePassed]);
+    return `Closes ${deadlineLabel} (${parts.join(' ')} left)`;
+  }, [nowMs, isRestaurantPollClosed, isDeadlinePassed, deadlineMs]);
 
   const dateStats = useMemo(() => {
     return eventData.dates.map((d) => {
@@ -1380,17 +2227,31 @@ function App() {
     return restaurantStats.filter((r) => r.voteCount === topRestaurantVoteCount);
   }, [restaurantStats, topRestaurantVoteCount]);
 
-  const hasWeekendsEnabled = useMemo(() => {
-    return eventData.dates.some((d) => d.isWeekend);
-  }, [eventData.dates]);
-
-  const hasNewYearEnabled = useMemo(() => {
-    return eventData.dates.some((d) => d.isNewYear);
+  const weekTabs = useMemo(() => {
+    const groups = new Map();
+    [...eventData.dates]
+      .sort((a, b) => a.dateStr.localeCompare(b.dateStr))
+      .forEach((d) => {
+        const k = weekStartOf(d.dateStr);
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(d.dateStr);
+      });
+    return [...groups.entries()].map(([key, list]) => {
+      const first = formatDateParts(list[0]);
+      const last = formatDateParts(list[list.length - 1]);
+      const label =
+        list.length === 1
+          ? `${first.month} ${first.day}`
+          : first.month === last.month
+          ? `${first.month} ${first.day}–${last.day}`
+          : `${first.month} ${first.day}–${last.month} ${last.day}`;
+      return { key, label };
+    });
   }, [eventData.dates]);
 
   const filteredDates = useMemo(() => {
     if (selectedWeekFilter === 'all') return dateStats;
-    return dateStats.filter((d) => String(d.weekGroup) === String(selectedWeekFilter));
+    return dateStats.filter((d) => weekStartOf(d.dateStr) === selectedWeekFilter);
   }, [dateStats, selectedWeekFilter]);
 
   const activeUserYesCount = useMemo(() => {
@@ -1456,7 +2317,13 @@ function App() {
     setIsSearchingPlaces(true);
     const t = setTimeout(async () => {
       try {
-        const results = await searchRestaurantPlaces(q, placesSessionRef.current, !guideSearch);
+        const results = await searchRestaurantPlaces(
+          q,
+          placesSessionRef.current,
+          !guideSearch,
+          eventData.searchCenter,
+          eventData.searchRadiusMiles
+        );
         if (!cancelled) {
           setPlaceSuggestions(results);
           setPlacesError('');
@@ -1475,7 +2342,7 @@ function App() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [restaurantQuery, guideSearch]);
+  }, [restaurantQuery, guideSearch, eventData.searchCenter.latitude, eventData.searchCenter.longitude, eventData.searchRadiusMiles]);
 
   // Restaurants already on the poll that match what's being typed
   const matchingExistingRestaurants = useMemo(() => {
@@ -1527,7 +2394,7 @@ function App() {
 
   const handlePickExistingRestaurant = async (rest) => {
     if (isRestaurantPollClosed) {
-      triggerToast('Restaurant voting closed on Friday, Nov 20.', 'info');
+      triggerToast(`Restaurant voting closed on ${deadlineDay}.`, 'info');
       return;
     }
     if (!requireIdentity() || !user) return;
@@ -1547,7 +2414,7 @@ function App() {
   // Guide button: vote if it's already suggested, otherwise look it up on Google Maps
   const handleGuidePick = (item) => {
     if (isRestaurantPollClosed) {
-      triggerToast('Restaurant voting closed on Friday, Nov 20.', 'info');
+      triggerToast(`Restaurant voting closed on ${deadlineDay}.`, 'info');
       return;
     }
     const existing = findGuideMatch(item);
@@ -1566,7 +2433,7 @@ function App() {
   // Picking a Google Maps result: vote for it if it's already on the poll, otherwise add it
   const handlePickPlace = async (prediction) => {
     if (isRestaurantPollClosed) {
-      triggerToast('Restaurant suggestions closed on Friday, Nov 20.', 'info');
+      triggerToast(`Restaurant suggestions closed on ${deadlineDay}.`, 'info');
       return;
     }
     if (!requireIdentity() || !user || isAddingPlace) return;
@@ -1574,8 +2441,8 @@ function App() {
     setIsAddingPlace(true);
     try {
       const place = await getRestaurantPlaceDetails(prediction.placeId, placesSessionRef.current);
-      if (!guideSearch && place.location && milesBetween(SEARCH_CENTER, place.location) > SEARCH_RADIUS_MILES + 0.5) {
-        triggerToast(`${place.name} is more than ${SEARCH_RADIUS_MILES} miles from Danbury.`, 'error');
+      if (!guideSearch && place.location && milesBetween(eventData.searchCenter, place.location) > eventData.searchRadiusMiles + 0.5) {
+        triggerToast(`${place.name} is more than ${eventData.searchRadiusMiles} miles from ${eventData.searchCenter.label}.`, 'error');
         return;
       }
 
@@ -1595,7 +2462,7 @@ function App() {
         rating: place.rating,
         userRatingCount: place.userRatingCount,
         note: newRestaurantNote.trim(),
-        suggestedBy: activeParticipant?.name || normalizedVoterName || 'Cartus and Alumni Member',
+        suggestedBy: activeParticipant?.name || normalizedVoterName || 'Team member',
       };
       const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
       await updateDoc(roomDocRef, {
@@ -1657,8 +2524,16 @@ function App() {
     try {
       const result = await signInWithPopup(auth, new GoogleAuthProvider());
       const email = (result.user.email || '').trim().toLowerCase();
-      if ((await sha256Hex(email)) !== ORGANIZER_EMAIL_SHA256) {
-        triggerToast('That Google account is not the poll organizer.', 'error');
+      let allowed = (await sha256Hex(email)) === SUPER_ADMIN_EMAIL_SHA256;
+      if (!allowed) {
+        try {
+          allowed = (await getDoc(doc(db, 'artifacts', appId, 'organizers', email))).exists();
+        } catch {
+          allowed = false;
+        }
+      }
+      if (!allowed) {
+        triggerToast("That Google account isn't an approved organizer. Ask the Super Admin to add it.", 'error');
         await signOut(auth);
       } else {
         triggerToast('Signed in as organizer.');
@@ -1701,85 +2576,6 @@ function App() {
     }
   };
 
-  const handleToggleWeekends = async () => {
-    if (!user) return;
-    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
-    let updatedDates;
-    if (hasWeekendsEnabled) {
-      updatedDates = eventData.dates.filter((d) => !d.isWeekend);
-      triggerToast('Removed December weekend slots');
-    } else {
-      const existingIds = new Set(eventData.dates.map((d) => d.id));
-      const toAdd = WEEKEND_CANDIDATE_DATES.filter((d) => !existingIds.has(d.id));
-      updatedDates = [...eventData.dates, ...toAdd].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
-      triggerToast('Added December weekend slots for everyone');
-    }
-    try {
-      await updateDoc(roomDocRef, { dates: updatedDates });
-    } catch (err) {
-      console.error('Error updating weekends:', err);
-    }
-  };
-
-  const handleToggleNewYearWeek = async () => {
-    if (!user) return;
-    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
-    let updatedDates;
-    if (hasNewYearEnabled) {
-      updatedDates = eventData.dates.filter((d) => !d.isNewYear);
-      if (selectedWeekFilter === '4') setSelectedWeekFilter('all');
-      triggerToast('Removed New Year 2027 Kickoff week');
-    } else {
-      const existingIds = new Set(eventData.dates.map((d) => d.id));
-      const toAdd = NEW_YEAR_KICKOFF_DATES.filter((d) => !existingIds.has(d.id));
-      updatedDates = [...eventData.dates, ...toAdd].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
-      triggerToast('Added New Year 2027 Kickoff Week (Jan 4–8)');
-    }
-    try {
-      await updateDoc(roomDocRef, { dates: updatedDates });
-    } catch (err) {
-      console.error('Error updating New Year dates:', err);
-    }
-  };
-
-  const handleAddCustomDate = async (e) => {
-    e.preventDefault();
-    if (!newDateStr || !user) return;
-
-    const id = `${newDateStr}-${newTimeLabel.replace(/\s+/g, '')}`;
-    if (eventData.dates.some((d) => d.id === id)) {
-      triggerToast('That date & time is already on the poll!', 'info');
-      return;
-    }
-
-    const [, month, day] = newDateStr.split('-').map(Number);
-    let weekGroup = 0;
-    let tag = 'Custom Date';
-    if (newDateStr.startsWith('2026-12')) {
-      if (day <= 6) { weekGroup = 1; tag = 'Week 1 • Custom'; }
-      else if (day <= 13) { weekGroup = 2; tag = 'Week 2 • Custom'; }
-      else if (day <= 20) { weekGroup = 3; tag = 'Week 3 • Custom'; }
-      else { weekGroup = 3; tag = 'Late Dec • Custom'; }
-    } else if (newDateStr.startsWith('2027-01')) {
-      weekGroup = 4;
-      tag = 'New Year 2027 • Custom';
-    }
-
-    const updatedDates = [
-      ...eventData.dates,
-      { id, dateStr: newDateStr, timeLabel: newTimeLabel, tag, weekGroup },
-    ].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
-
-    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
-    try {
-      await updateDoc(roomDocRef, { dates: updatedDates });
-      setShowAddDateModal(false);
-      triggerToast('Added new date option for the whole team!');
-    } catch (err) {
-      console.error('Error adding date:', err);
-    }
-  };
-
   const handleRemoveDate = async (dateId) => {
     if (!isOrganizer) {
       triggerToast('Only the poll organizer can remove dates.', 'error');
@@ -1800,6 +2596,35 @@ function App() {
     } catch (err) {
       console.error('Error removing date:', err);
       triggerToast('Could not remove that date.', 'error');
+    }
+  };
+
+  const handleSaveSettings = async (settings) => {
+    if (!isOrganizer) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId), settings);
+      triggerToast('Event settings saved.');
+    } catch (err) {
+      console.error('Error saving settings:', err);
+      triggerToast('Could not save the settings.', 'error');
+    }
+  };
+
+  const handleAddDates = async (newDates) => {
+    if (!isOrganizer) return;
+    const existing = new Set(eventData.dates.map((d) => d.id));
+    const add = newDates.filter((d) => !existing.has(d.id));
+    if (!add.length) {
+      triggerToast(newDates.length ? 'Those dates are already in the poll.' : 'Pick at least one day.', 'info');
+      return;
+    }
+    const merged = [...eventData.dates, ...add].sort((a, b) => a.dateStr.localeCompare(b.dateStr) || a.id.localeCompare(b.id));
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId), { dates: merged });
+      triggerToast(`Added ${add.length} date${add.length === 1 ? '' : 's'}.`);
+    } catch (err) {
+      console.error('Error adding dates:', err);
+      triggerToast('Could not add those dates.', 'error');
     }
   };
 
@@ -1834,35 +2659,6 @@ function App() {
     } catch (err) {
       console.error('Error deleting participant:', err);
       triggerToast(`Could not remove ${name}.`, 'error');
-    }
-  };
-
-  const handleCreateNewRoom = async (e) => {
-    e.preventDefault();
-    if (!user) return;
-    const newId = generateRoomId();
-    const initialPayload = {
-      title: newPollTitle.trim() || 'Holiday Lunch 2026',
-      targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
-      location: newPollLocation.trim() || 'TBD — Vote on Restaurant Suggestions Below!',
-      notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
-      dates: DEFAULT_CANDIDATE_DATES,
-      restaurants: [],
-      restaurantPollForceClosed: false,
-      lockedDateId: null,
-      sharedUrl: '',
-      createdAt: serverTimestamp(),
-    };
-
-    try {
-      const newRoomRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', newId);
-      await setDoc(newRoomRef, initialPayload);
-      setRoomId(newId);
-      setShowNewPollModal(false);
-      triggerToast(`Created fresh live room (${newId})!`);
-    } catch (err) {
-      console.error('Error creating new room:', err);
-      triggerToast('Failed to create new room.', 'error');
     }
   };
 
@@ -1903,13 +2699,14 @@ function App() {
   const groupChatInviteText = useMemo(() => {
     const restLine =
       restaurantStats.length > 0
-        ? `\n🍽️ Restaurant Poll (${isRestaurantPollClosed ? 'Closed' : 'Closes Fri, Nov 20'}): ${restaurantStats
+        ? `\n🍽️ Restaurant Poll (${isRestaurantPollClosed ? 'Closed' : `Closes ${deadlineLabel}`}): ${restaurantStats
             .slice(0, 3)
             .map((r) => `${r.name} (${r.voteCount})`)
             .join(' • ')}`
-        : '\n🍽️ Restaurant Poll: Open until Fri, Nov 20 at 11:59 PM — suggest & vote on a spot!';
+        : `\n🍽️ Restaurant Poll: open until ${deadlineLabel} — suggest & vote on a spot!`;
     const linkLine = savedShareUrl ? `\n\nTap here to enter your name & pick a date:\n${savedShareUrl}` : '';
-    return `🎄 *${eventData.title}* 🥂\n🔵 *Cartus and Alumni Team • Christmas & New Year 2026–2027*\n🗓️ Primary Window: First 3 Weeks of December 2026 (Dec 1 – Dec 18) — Requested by Maxim${restLine}\n\nHey Cartus and Alumni! Just enter your name and tap the December dates that work for you (you can also see who already picked each date!):${linkLine}`;
+    const windowLine = eventData.targetWindow ? `\n🗓️ ${eventData.targetWindow}` : '';
+    return `🎉 *${eventData.title}*${windowLine}${restLine}\n\nEnter your name and tap the dates that work for you (you can see who already picked each date):${linkLine}`;
   }, [eventData, savedShareUrl, restaurantStats, isRestaurantPollClosed]);
 
   const lockedDateObj = dateStats.find((d) => d.id === eventData.lockedDateId);
@@ -1917,7 +2714,7 @@ function App() {
   // Link back to this poll (keeps a non-default room) that opens the "Add to calendar" card
   const calendarPageLink = useMemo(() => {
     const base = `${window.location.origin}${window.location.pathname}`;
-    const roomQuery = roomId && roomId !== 'cartus-it-2026' ? `?room=${encodeURIComponent(roomId)}` : '';
+    const roomQuery = roomId && roomId !== DEFAULT_ROOM_ID ? `?room=${encodeURIComponent(roomId)}` : '';
     return `${base}${roomQuery}#add-to-calendar`;
   }, [roomId]);
 
@@ -1933,11 +2730,11 @@ function App() {
     return buildCalendarEvent({
       dateStr: lockedDateObj.dateStr,
       timeLabel: lockedDateObj.timeLabel,
-      title: 'Cartus and Alumni Holiday Lunch 🎄',
+      title: eventData.title,
       restaurant: finalRestaurant,
       pageLink: calendarPageLink,
     });
-  }, [lockedDateObj, finalRestaurant, calendarPageLink]);
+  }, [lockedDateObj, finalRestaurant, calendarPageLink, eventData.title]);
 
   // Text message the organizer sends once the date is locked
   const finalAnnouncementText = useMemo(() => {
@@ -1947,8 +2744,8 @@ function App() {
       ? `🍽️ ${finalRestaurant.name}${finalRestaurant.address ? `\n📍 ${finalRestaurant.address}` : ''}`
       : '🍽️ Restaurant: TBD';
     const mapLine = finalRestaurant?.mapsUrl ? `\n🗺️ Map: ${finalRestaurant.mapsUrl}` : '';
-    return `🎄 Cartus and Alumni Holiday Lunch is set! 🥂\n\n📅 ${formatted.full} at ${lockedDateObj.timeLabel}\n${restLine}${mapLine}\n\nAdd it to your calendar (Outlook, Apple, Google & more), with optional reminders the day before and 1 hour before:\n${calendarPageLink}`;
-  }, [lockedDateObj, finalRestaurant, calendarPageLink]);
+    return `🎉 ${eventData.title} is set! 🥂\n\n📅 ${formatted.full} at ${lockedDateObj.timeLabel}\n${restLine}${mapLine}\n\nAdd it to your calendar (Outlook, Apple, Google & more), with optional reminders the day before and 1 hour before:\n${calendarPageLink}`;
+  }, [lockedDateObj, finalRestaurant, calendarPageLink, eventData.title]);
 
   const handleTextInvite = () => {
     // "sms:?&body=" opens Messages with the text filled in (works on iPhone and Android)
@@ -1958,7 +2755,7 @@ function App() {
   const handleShareInvite = async () => {
     if (navigator.share) {
       try {
-        await navigator.share({ title: 'Cartus and Alumni Holiday Lunch', text: finalAnnouncementText });
+        await navigator.share({ title: eventData.title, text: finalAnnouncementText });
       } catch {
         // Share sheet dismissed
       }
@@ -2017,7 +2814,7 @@ function App() {
       triggerToast('No phone numbers on file for that group.', 'error');
       return;
     }
-    const body = encodeURIComponent(finalAnnouncementText || `Cartus and Alumni Holiday Lunch poll: ${calendarPageLink.replace('#add-to-calendar', '')}`);
+    const body = encodeURIComponent(finalAnnouncementText || `${eventData.title} poll: ${calendarPageLink.replace('#add-to-calendar', '')}`);
     const isApple = /iPhone|iPad|iPod|Macintosh/.test(navigator.userAgent);
     // iOS/macOS Messages: sms:/open?addresses=a,b&body= ; Android: sms:a,b?body=
     window.location.href = isApple
@@ -2070,6 +2867,59 @@ function App() {
     }
   }, [Boolean(lockedDateObj)]);
 
+  const toastEl = toastMessage && (
+    <div
+      className="fixed left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-50 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl shadow-xl bg-[#0B1F3A] text-white text-sm font-medium border border-[#00A3E0]/40"
+      style={{ bottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
+    >
+      <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+      <span className="truncate">{toastMessage.text}</span>
+    </div>
+  );
+
+  if (view === 'hub') {
+    return (
+      <>
+        <OrganizerHub
+          user={user}
+          googleEmail={googleEmail}
+          isSuperAdmin={isSuperAdmin}
+          isApprovedOrganizer={isApprovedOrganizer}
+          rolesReady={rolesReady}
+          onSignIn={handleOrganizerSignIn}
+          onSignOut={handleOrganizerSignOut}
+          triggerToast={triggerToast}
+        />
+        {toastEl}
+      </>
+    );
+  }
+
+  if (roomStatus !== 'ready') {
+    return (
+      <div className="relative z-[1] min-h-screen flex items-center justify-center p-4">
+        <div className="max-w-md w-full rounded-2xl bg-white/95 shadow-xl p-6 text-center space-y-3">
+          {roomStatus === 'loading' && <p className="text-sm text-slate-600">Loading the lunch poll…</p>}
+          {roomStatus === 'error' && <p className="text-sm text-slate-600">Couldn't connect. Check your connection and refresh the page.</p>}
+          {roomStatus === 'missing' && (
+            <>
+              <h1 className="text-lg font-extrabold text-[#0B1F3A]">Event not found</h1>
+              <p className="text-sm text-slate-600">This link may be old, or the organizer deleted the event.</p>
+              <p className="text-sm">
+                <a href={eventUrl(DEFAULT_ROOM_ID)} className="font-bold text-[#005EB8] underline">Go to the main poll</a>
+                {' · '}
+                <a href={hubUrl()} className="font-bold text-[#005EB8] underline">Organizer hub</a>
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const themeCfg = THEMES[eventData.theme] || THEMES.plain;
+  const ThemeArt = themeCfg.Art;
+
   // ============================================================================
   // RENDER UI (iPhone & Mobile Safari First)
   // ============================================================================
@@ -2091,19 +2941,21 @@ function App() {
       )}
 
       <main className="max-w-5xl mx-auto px-3 sm:px-6 pt-4 sm:pt-6 space-y-5 sm:space-y-6">
-        {/* Cartus and Alumni Hero Event Banner */}
-        <section className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#7A1414]/90 via-[#A51C22]/90 to-[#5A0E13]/90 text-white px-4 pb-4 pt-16 sm:px-8 sm:pb-8 sm:pt-16 shadow-xl shadow-black/30 border border-amber-300/40">
-          <div className="absolute -left-10 -bottom-16 w-56 h-56 rounded-full bg-emerald-500/20 blur-2xl pointer-events-none" />
-          <div className="absolute right-10 -top-10 w-48 h-48 rounded-full bg-amber-300/20 blur-2xl pointer-events-none" />
-          <HangingOrnaments />
+        {/* Event banner (colors and artwork follow the event's theme) */}
+        <section className={`relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br ${themeCfg.hero} text-white px-4 pb-4 sm:px-8 sm:pb-8 shadow-xl shadow-black/30 border`}>
+          <div className={`absolute -left-10 -bottom-16 w-56 h-56 rounded-full ${themeCfg.blobA} blur-2xl pointer-events-none`} />
+          <div className={`absolute right-10 -top-10 w-48 h-48 rounded-full ${themeCfg.blobB} blur-2xl pointer-events-none`} />
+          {themeCfg.hanging && <HangingOrnaments />}
 
           <div className="relative z-10 flex items-start gap-3 sm:gap-6">
           <div className="flex-1 min-w-0 flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+              {eventData.targetWindow && (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-400/20 text-amber-200 text-[11px] sm:text-xs font-bold border border-amber-300/30">
                 <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                 {eventData.targetWindow}
               </span>
+              )}
               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/10 text-sky-100 text-[11px] sm:text-xs font-medium border border-white/15">
                 <Users className="w-3.5 h-3.5 text-emerald-300" />
                 {participants.length} {participants.length === 1 ? 'person' : 'people'} in
@@ -2114,12 +2966,14 @@ function App() {
               <h1 className="text-xl sm:text-3xl font-extrabold tracking-tight leading-snug text-white">
                 {eventData.title}
               </h1>
-              <p className="mt-1.5 text-red-50/90 text-xs sm:text-sm max-w-3xl leading-relaxed">
+              {eventData.notes && (
+              <p className={`mt-1.5 ${themeCfg.notes} text-xs sm:text-sm max-w-3xl leading-relaxed whitespace-pre-line`}>
                 {eventData.notes}
               </p>
+              )}
             </div>
           </div>
-          <HolidayWreathSanta className="w-24 h-24 sm:w-44 sm:h-44 shrink-0 -mt-10 sm:-mt-12 drop-shadow-xl" />
+          {ThemeArt && <ThemeArt className={themeCfg.artClass} />}
           </div>
         </section>
 
@@ -2247,7 +3101,7 @@ function App() {
             <div className="bg-[#0B1F3A] text-white px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
               <div>
                 <h2 className="text-base sm:text-lg font-extrabold">Organizer dashboard</h2>
-                <p className="text-[11px] text-slate-300">Only you can see this.</p>
+                <p className="text-[11px] text-slate-300">Only this event's organizers can see this.</p>
               </div>
               <div className="text-right text-[11px] text-slate-300 leading-tight">
                 <span className="block"><span className="text-white font-bold text-sm">{dashboardRows.length}</span> responses</span>
@@ -2256,6 +3110,45 @@ function App() {
             </div>
 
             <div className="p-4 sm:p-6 space-y-5">
+              {/* 0. Event settings */}
+              <div className="rounded-xl border-2 border-slate-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowSettings((v) => !v)}
+                  aria-expanded={showSettings}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-3 text-left bg-slate-50 hover:bg-slate-100 touch-manipulation"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Settings className="w-4 h-4 text-[#0B1F3A] shrink-0" />
+                    <span className="min-w-0">
+                      <span className="block text-sm font-extrabold text-[#0B1F3A]">Event settings</span>
+                      <span className="block text-[11px] text-slate-500 truncate">Name, dates, location & radius, deadline, theme</span>
+                    </span>
+                  </span>
+                  <ChevronDown className={`w-5 h-5 text-slate-500 shrink-0 transition-transform ${showSettings ? 'rotate-180' : ''}`} />
+                </button>
+                {showSettings && (
+                  <EventSettingsPanel
+                    eventData={eventData}
+                    onSave={handleSaveSettings}
+                    onAddDates={handleAddDates}
+                    onRemoveDate={handleRemoveDate}
+                  />
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => copyToClipboard(eventUrl(roomId), 'eventLink')}
+                  className={`${SMALL_BTN} bg-white text-slate-700 border-slate-300 hover:bg-slate-100`}
+                >
+                  <Copy className="w-3.5 h-3.5" /> Copy event link
+                </button>
+                <a href={hubUrl()} className={`${SMALL_BTN} bg-white text-slate-700 border-slate-300 hover:bg-slate-100`}>
+                  <ExternalLink className="w-3.5 h-3.5" /> Organizer hub (new event)
+                </a>
+              </div>
+
               {/* 1. Restaurant poll */}
               <div>
                 <h3 className="text-sm font-extrabold text-[#0B1F3A] mb-2">1. Restaurant poll</h3>
@@ -2431,7 +3324,7 @@ function App() {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-200 text-emerald-900">
-                    Official Cartus and Alumni Lunch Date
+                    Official Lunch Date
                   </span>
                 </div>
                 <h2 className="text-lg sm:text-xl font-extrabold text-emerald-950 mt-1">
@@ -2632,7 +3525,7 @@ function App() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
-                onClick={() => downloadIcs(buildIcs(calendarEvent, calendarReminders), 'cartus-alumni-holiday-lunch.ics')}
+                onClick={() => downloadIcs(buildIcs(calendarEvent, calendarReminders), `${slugify(eventData.title)}.ics`)}
                 className="inline-flex items-center justify-center gap-2 min-h-[48px] px-4 py-2.5 rounded-xl bg-[#0B1F3A] hover:bg-[#13305a] text-white text-sm font-semibold shadow-sm transition-all touch-manipulation sm:col-span-2"
               >
                 <Download className="w-4 h-4" />
@@ -2983,13 +3876,7 @@ function App() {
 
             {/* Horizontally Scrollable Week Filter Pills on iPhone */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
-              {[
-                { key: 'all', label: 'All Dates' },
-                { key: '1', label: 'Week 1 (Dec 1–4)' },
-                { key: '2', label: 'Week 2 (Dec 7–11)' },
-                { key: '3', label: 'Week 3 (Dec 14–18)' },
-                ...(hasNewYearEnabled ? [{ key: '4', label: 'Jan 4–8' }] : []),
-              ].map((tab) => (
+              {[{ key: 'all', label: 'All Dates' }, ...(weekTabs.length > 1 ? weekTabs : [])].map((tab) => (
                 <button
                   key={tab.key}
                   onClick={() => setSelectedWeekFilter(tab.key)}
@@ -3242,7 +4129,7 @@ function App() {
                 </div>
                 <div>
                   <h4 className="text-sm sm:text-base font-extrabold text-[#0B1F3A]">
-                    Restaurant voting closed on Friday, Nov 20 — you can still RSVP for a lunch date above, without a restaurant vote.
+                    Restaurant voting closed on {deadlineDay} — you can still RSVP for a lunch date above, without a restaurant vote.
                   </h4>
                   {winningRestaurants.length > 0 ? (
                     <p className="text-xs sm:text-sm text-emerald-700 font-bold mt-1">
@@ -3286,7 +4173,7 @@ function App() {
                 )}
               </div>
               <p className="text-[11px] text-slate-500 px-1">
-                Restaurants within {SEARCH_RADIUS_MILES} miles of Danbury, CT. Already suggested? Pick it from the list to add your vote.
+                Restaurants within {eventData.searchRadiusMiles} miles of {eventData.searchCenter.label}. Already suggested? Pick it from the list to add your vote.
               </p>
 
               {restaurantQuery.trim().length >= 2 && (
@@ -3326,7 +4213,7 @@ function App() {
                       <p className="px-2.5 py-2.5 text-sm text-rose-700">{placesError}</p>
                     ) : placeSuggestions.length === 0 ? (
                       <p className="px-2.5 py-2.5 text-sm text-slate-500">
-                        No restaurants found within {SEARCH_RADIUS_MILES} miles of Danbury. Try a different name.
+                        No restaurants found within {eventData.searchRadiusMiles} miles of {eventData.searchCenter.label}. Try a different name.
                       </p>
                     ) : (
                       placeSuggestions.map((p) => {
@@ -3376,6 +4263,7 @@ function App() {
           )}
 
           {/* Quick Suggestion Guide (from the Greater Danbury Corporate Holiday Lunch Guide PDF) */}
+          {eventData.guideEnabled && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50/60">
             <button
               type="button"
@@ -3461,11 +4349,12 @@ function App() {
               </div>
             )}
           </div>
+          )}
 
           {/* Suggested Restaurants List & Live Poll */}
           {restaurantStats.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
-              No restaurant suggestions yet! Add your favorite lunch spot above so the Cartus and Alumni team can vote on it before Friday, Nov 20.
+              No restaurant suggestions yet! Add your favorite lunch spot above so the team can vote on it before {deadlineDay}.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -3568,7 +4457,7 @@ function App() {
               <div className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-[#005EB8]" />
                 <h3 className="font-extrabold text-base text-[#0B1F3A]">
-                  Cartus and Alumni RSVP Roster ({participants.length})
+                  RSVP Roster ({participants.length})
                 </h3>
               </div>
               <span className="text-xs text-slate-400 hidden sm:inline">Tap your name to sign back in</span>
@@ -3646,11 +4535,16 @@ function App() {
         )}
 
         {/* Organizer sign-in (only the organizer's Google account can close the restaurant poll) */}
-        <footer className="pt-2 pb-28 sm:pb-8 text-center text-xs text-white/70">
-          {isOrganizer ? (
+        <footer className={`pt-2 pb-28 sm:pb-8 text-center text-xs ${themeCfg.footer}`}>
+          {googleEmail ? (
             <span>
-              Signed in as organizer ·{' '}
-              <button type="button" onClick={handleOrganizerSignOut} className="underline underline-offset-2 hover:text-white">
+              {isOrganizer ? 'Signed in as organizer' : 'Signed in (not an organizer of this event)'} ·{' '}
+              {isApprovedOrganizer && (
+                <>
+                  <a href={hubUrl()} className="underline underline-offset-2">Organizer hub</a> ·{' '}
+                </>
+              )}
+              <button type="button" onClick={handleOrganizerSignOut} className="underline underline-offset-2">
                 Sign out
               </button>
             </span>
@@ -3727,7 +4621,7 @@ function App() {
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A]">Share with Cartus and Alumni Chat</h3>
+                <h3 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A]">Share with your team</h3>
                 <p className="text-xs sm:text-sm text-slate-500 mt-1">
                   Paste your public <span className="font-semibold text-[#0B1F3A]">g.co/gemini/share/...</span> link below so everyone can open it on iPhone, Android, or PC.
                 </p>
@@ -3773,7 +4667,7 @@ function App() {
 
             <div className="space-y-2">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Cartus and Alumni Invite Message
+                Invite message
               </label>
               <textarea
                 readOnly
@@ -3793,141 +4687,6 @@ function App() {
         </div>
       )}
 
-      {/* ====================================================================== */}
-      {/* MODAL 2: ADD CUSTOM DATE (Mobile Bottom Sheet)                         */}
-      {/* ====================================================================== */}
-      {showAddDateModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <form
-            onSubmit={handleAddCustomDate}
-            className="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4"
-            style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-extrabold text-[#0B1F3A]">Add Custom Date Option</h3>
-              <button
-                type="button"
-                onClick={() => setShowAddDateModal(false)}
-                className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 touch-manipulation"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Select Date</label>
-                <input
-                  type="date"
-                  required
-                  value={newDateStr}
-                  onChange={(e) => setNewDateStr(e.target.value)}
-                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Lunch Time</label>
-                <select
-                  value={newTimeLabel}
-                  onChange={(e) => setNewTimeLabel(e.target.value)}
-                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none bg-white"
-                >
-                  <option value="11:30 AM">11:30 AM</option>
-                  <option value="12:00 PM">12:00 PM</option>
-                  <option value="12:30 PM">12:30 PM</option>
-                  <option value="1:00 PM">1:00 PM</option>
-                  <option value="1:30 PM">1:30 PM</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowAddDateModal(false)}
-                className="min-h-[44px] px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 touch-manipulation"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="min-h-[44px] px-5 py-2 rounded-xl text-sm font-bold text-white bg-[#005EB8] hover:bg-[#004A99] shadow-sm touch-manipulation"
-              >
-                Add to Poll
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* ====================================================================== */}
-      {/* MODAL 3: START A NEW LIVE POLL ROOM (Mobile Bottom Sheet)              */}
-      {/* ====================================================================== */}
-      {showNewPollModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <form
-            onSubmit={handleCreateNewRoom}
-            className="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4"
-            style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-extrabold text-[#0B1F3A]">Create Separate Live Poll Room</h3>
-              <button
-                type="button"
-                onClick={() => setShowNewPollModal(false)}
-                className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 touch-manipulation"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-500">
-              Spins up a fresh, isolated live cloud room for another sub-team while keeping your current Cartus and Alumni poll intact.
-            </p>
-
-            <div className="space-y-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Event Name</label>
-                <input
-                  type="text"
-                  required
-                  value={newPollTitle}
-                  onChange={(e) => setNewPollTitle(e.target.value)}
-                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1">Initial Restaurant Note (Optional)</label>
-                <input
-                  type="text"
-                  value={newPollLocation}
-                  onChange={(e) => setNewPollLocation(e.target.value)}
-                  placeholder="e.g., TBD — Vote on Restaurant Suggestions Below!"
-                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowNewPollModal(false)}
-                className="min-h-[44px] px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 touch-manipulation"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="min-h-[44px] px-5 py-2 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-[#005EB8] to-[#00A3E0] shadow-sm touch-manipulation"
-              >
-                Create Live Room
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
     </div>
   );
 }
@@ -3936,7 +4695,7 @@ function App() {
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
   </script>
-  <!-- Christmas background animation (plain JS; skipped when unsupported or reduced motion is requested) -->
+  <!-- Background animation per theme: Christmas snow + lights, Winter snow, Summer sparkles, Plain none (skipped for reduced motion / data saver) -->
   <script>
     (function () {
       var canvas = document.getElementById('xmas-snow');
@@ -3949,6 +4708,9 @@ function App() {
 
       var W = 0, H = 0, DPR = 1, flakes = [], stars = [], bulbs = [], raf = 0, running = false, last = 0;
       var COLORS = ['#ef4444', '#22c55e', '#facc15', '#38bdf8', '#f97316'];
+      var WARM = ['#fde68a', '#fdba74', '#fcd34d', '#ffffff', '#99f6e4'];
+      function currentTheme() { return document.documentElement.getAttribute('data-theme') || 'christmas'; }
+      var theme = currentTheme();
 
       function rand(a, b) { return a + Math.random() * (b - a); }
 
@@ -3962,7 +4724,7 @@ function App() {
         flakes = [];
         for (var i = 0; i < count; i++) {
           var r = rand(0.8, 3.2);
-          flakes.push({ x: rand(0, W), y: rand(-H, H), r: r, vy: 18 + r * 14, sway: rand(8, 28), phase: rand(0, 6.28), freq: rand(0.4, 1.1), a: rand(0.55, 0.95) });
+          flakes.push({ x: rand(0, W), y: rand(-H, H), r: r, vy: 18 + r * 14, sway: rand(8, 28), phase: rand(0, 6.28), freq: rand(0.4, 1.1), a: rand(0.55, 0.95), c: WARM[i % WARM.length] });
         }
         stars = [];
         for (var j = 0; j < Math.round(W / 70); j++) {
@@ -4010,7 +4772,8 @@ function App() {
         var t = now / 1000;
         ctx.clearRect(0, 0, W, H);
 
-        for (var s = 0; s < stars.length; s++) {
+        var summer = theme === 'summer';
+        for (var s = 0; s < stars.length && !summer; s++) {
           var st = stars[s];
           ctx.globalAlpha = 0.25 + 0.6 * Math.max(0, Math.sin(t * st.speed + st.phase));
           ctx.fillStyle = '#fde68a';
@@ -4020,20 +4783,28 @@ function App() {
         ctx.fillStyle = '#ffffff';
         for (var i = 0; i < flakes.length; i++) {
           var f = flakes[i];
-          f.y += f.vy * dt;
           f.phase += f.freq * dt;
           var x = f.x + Math.sin(f.phase) * f.sway;
-          if (f.y - f.r > H) { f.y = -f.r - rand(0, 40); f.x = rand(0, W); }
-          ctx.globalAlpha = f.a;
+          if (summer) {
+            // warm sparkles drifting up
+            f.y -= f.vy * 0.55 * dt;
+            if (f.y + f.r < 0) { f.y = H + f.r + rand(0, 40); f.x = rand(0, W); }
+            ctx.fillStyle = f.c;
+            ctx.globalAlpha = f.a * (0.35 + 0.45 * Math.max(0, Math.sin(t * 2 + f.phase)));
+          } else {
+            f.y += f.vy * dt;
+            if (f.y - f.r > H) { f.y = -f.r - rand(0, 40); f.x = rand(0, W); }
+            ctx.globalAlpha = f.a;
+          }
           ctx.beginPath(); ctx.arc(x, f.y, f.r, 0, 6.283); ctx.fill();
         }
         ctx.globalAlpha = 1;
-        drawLights(t);
+        if (theme === 'christmas') drawLights(t);
         raf = requestAnimationFrame(frame);
       }
 
       function start() {
-        if (running || (reduce && reduce.matches) || document.hidden) return;
+        if (running || (reduce && reduce.matches) || document.hidden || theme === 'plain') return;
         running = true; last = 0;
         document.documentElement.classList.add('xmas-animated');
         raf = requestAnimationFrame(frame);
@@ -4052,6 +4823,14 @@ function App() {
       window.addEventListener('resize', function () {
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(build, 150);
+      });
+      window.addEventListener('lunch-theme', function () {
+        var next = currentTheme();
+        if (next === theme) return;
+        theme = next;
+        stop(true);
+        build();
+        start();
       });
       document.addEventListener('visibilitychange', function () {
         if (document.hidden) stop(false); else start();
