@@ -1347,6 +1347,10 @@ function App() {
   };
 
   const handleRemoveDate = async (dateId) => {
+    if (!isOrganizer) {
+      triggerToast('Only the poll organizer can remove dates.', 'error');
+      return;
+    }
     if (eventData.dates.length <= 1) {
       triggerToast('Keep at least one date option in the poll.', 'error');
       return;
@@ -1361,6 +1365,7 @@ function App() {
       triggerToast('Removed date option');
     } catch (err) {
       console.error('Error removing date:', err);
+      triggerToast('Could not remove that date.', 'error');
     }
   };
 
@@ -1384,12 +1389,17 @@ function App() {
 
   const handleRemoveParticipant = async (participantId, name) => {
     if (!user) return;
+    if (!isOrganizer) {
+      triggerToast('Only the poll organizer can remove people.', 'error');
+      return;
+    }
     const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', participantId);
     try {
       await deleteDoc(voteDocRef);
       triggerToast(`Removed ${name} from the roster.`);
     } catch (err) {
       console.error('Error deleting participant:', err);
+      triggerToast(`Could not remove ${name}.`, 'error');
     }
   };
 
@@ -2429,14 +2439,14 @@ function App() {
                         {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
                       </button>)}
 
-                      <button
+                      {isOrganizer && <button
                         type="button"
                         onClick={() => handleRemoveDate(d.id)}
                         title="Remove date option"
                         className="w-9 h-9 hidden sm:flex items-center justify-center rounded-xl text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      </button>}
                     </div>
                   </div>
 
@@ -2941,14 +2951,14 @@ function App() {
                       </div>
                     </div>
 
-                    <button
+                    {isOrganizer && <button
                       type="button"
                       onClick={() => handleRemoveParticipant(p.id, p.name)}
                       title={`Remove ${p.name}`}
                       className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0 touch-manipulation"
                     >
                       <Trash2 className="w-4 h-4" />
-                    </button>
+                    </button>}
                   </div>
                 );
               })}
