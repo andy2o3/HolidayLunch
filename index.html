@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>FestiveTable - Cartus and Alumni</title>
+  <title>Holiday Lunch 2026 - Pre AI Takeover</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
@@ -502,7 +502,7 @@ function App() {
 
   // Event Metadata State (Synced in real time with Firebase Firestore)
   const [eventData, setEventData] = useState({
-    title: 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄🥂',
+    title: 'Holiday Lunch 2026 - Pre AI Takeover',
     targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
     location: 'TBD — Vote on Restaurant Suggestions Below!',
     notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
@@ -582,7 +582,7 @@ function App() {
   const [showNewPollModal, setShowNewPollModal] = useState(false);
   const [newDateStr, setNewDateStr] = useState('2026-12-10');
   const [newTimeLabel, setNewTimeLabel] = useState('12:00 PM');
-  const [newPollTitle, setNewPollTitle] = useState('Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄');
+  const [newPollTitle, setNewPollTitle] = useState('Holiday Lunch 2026 - Pre AI Takeover');
   const [newPollLocation, setNewPollLocation] = useState('');
   const [shareUrlInput, setShareUrlInput] = useState('');
   const [copiedType, setCopiedType] = useState(null);
@@ -670,12 +670,17 @@ function App() {
               renamed[key] = data[key].split('Cartus IT').join('Cartus and Alumni');
             }
           });
+          // One-time retitle of the saved poll name
+          const currentTitle = renamed.title || data.title || '';
+          if (currentTitle.includes('Holiday & New Year Lunch 2026–2027')) {
+            renamed.title = 'Holiday Lunch 2026 - Pre AI Takeover';
+          }
           if (Object.keys(renamed).length > 0) {
             Object.assign(data, renamed);
             updateDoc(roomDocRef, renamed).catch((e) => console.error('Error renaming room text:', e));
           }
           setEventData({
-            title: data.title || 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄🥂',
+            title: data.title || 'Holiday Lunch 2026 - Pre AI Takeover',
             targetWindow: data.targetWindow || 'First 3 Weeks of December 2026 • Requested by Maxim',
             location: data.location || 'TBD — Vote on Restaurant Suggestions Below!',
             notes:
@@ -691,7 +696,7 @@ function App() {
         } else {
           // Initialize default shared room in Firestore if it doesn't exist yet
           const initialPayload = {
-            title: 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄🥂',
+            title: 'Holiday Lunch 2026 - Pre AI Takeover',
             targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
             location: 'TBD — Vote on Restaurant Suggestions Below!',
             notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
@@ -1539,7 +1544,7 @@ function App() {
     if (!user) return;
     const newId = generateRoomId();
     const initialPayload = {
-      title: newPollTitle.trim() || 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄',
+      title: newPollTitle.trim() || 'Holiday Lunch 2026 - Pre AI Takeover',
       targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
       location: newPollLocation.trim() || 'TBD — Vote on Restaurant Suggestions Below!',
       notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
