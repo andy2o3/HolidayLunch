@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Holiday Lunch 2026</title>
+  <title>Holiday Happy Hour 2026</title>
   <meta name="theme-color" content="#0b2e22">
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -168,8 +168,20 @@ const normalizeEvent = (data = {}) => ({
   theme: THEME_KEYS.includes(data.theme) ? data.theme : DEFAULT_EVENT_SETTINGS.theme,
   guideEnabled: data.guideEnabled !== undefined ? Boolean(data.guideEnabled) : DEFAULT_EVENT_SETTINGS.guideEnabled,
   defaultTimeLabel: data.defaultTimeLabel || DEFAULT_EVENT_SETTINGS.defaultTimeLabel,
+  eventKind: (typeof data.eventKind === 'string' && data.eventKind.trim()) || 'lunch',
   organizerUids: Array.isArray(data.organizerUids) ? data.organizerUids : [],
 });
+
+// "happy hour" -> { kind: 'happy hour', Kind: 'Happy hour', KIND: 'Happy Hour' }
+const EVENT_KIND_OPTIONS = ['lunch', 'happy hour', 'dinner', 'breakfast', 'get-together'];
+const kindWords = (kind = 'lunch') => {
+  const k = String(kind || 'lunch').trim().toLowerCase();
+  return {
+    kind: k,
+    Kind: k.charAt(0).toUpperCase() + k.slice(1),
+    KIND: k.replace(/(^|[\s-])(\w)/g, (m, a, b) => a + b.toUpperCase()),
+  };
+};
 
 // ---------------- Date / time helpers for organizers ----------------
 const pad2 = (n) => String(n).padStart(2, '0');
@@ -783,6 +795,7 @@ const formFromEvent = (ev) => ({
   deadlineLocal: msToLocalInput(ev.restaurantDeadlineMs),
   timeInput: timeLabelToInput(ev.defaultTimeLabel),
   guideEnabled: ev.guideEnabled,
+  eventKind: ev.eventKind,
 });
 
 const formToSettings = (form) => {
@@ -797,6 +810,7 @@ const formToSettings = (form) => {
     restaurantDeadlineMs: Number.isFinite(deadline) ? deadline : DEFAULT_EVENT_SETTINGS.restaurantDeadlineMs,
     defaultTimeLabel: timeInputToLabel(form.timeInput || '12:00'),
     guideEnabled: Boolean(form.guideEnabled),
+    eventKind: (form.eventKind || 'lunch').trim().toLowerCase().slice(0, 30) || 'lunch',
   };
 };
 
@@ -914,7 +928,7 @@ const EventDetailsFields = ({ form, setForm }) => {
             value={form.notes}
             onChange={set('notes')}
             maxLength={600}
-            placeholder="Tell people what this lunch is for and when to respond by."
+            placeholder="Tell people what this event is for and when to respond by."
           />
         </Field>
       </div>
@@ -956,7 +970,12 @@ const EventDetailsFields = ({ form, setForm }) => {
       <Field label="Restaurant voting closes">
         <input type="datetime-local" className={INPUT_CLS} value={form.deadlineLocal} onChange={set('deadlineLocal')} />
       </Field>
-      <Field label="Default lunch time">
+      <Field label="Kind of event" hint="Used in the page wording, e.g. “Official Happy Hour Date”.">
+        <select className={INPUT_CLS} value={EVENT_KIND_OPTIONS.includes(form.eventKind) ? form.eventKind : 'lunch'} onChange={set('eventKind')}>
+          {EVENT_KIND_OPTIONS.map((k) => <option key={k} value={k}>{kindWords(k).Kind}</option>)}
+        </select>
+      </Field>
+      <Field label="Default start time">
         <input type="time" className={INPUT_CLS} value={form.timeInput} onChange={set('timeInput')} />
       </Field>
       <label className="sm:col-span-2 flex items-center gap-2 text-sm text-slate-700">
@@ -1073,7 +1092,7 @@ const EventSettingsPanel = ({ eventData, onSave, onAddDates, onRemoveDate, onRet
             </button>
           </div>
           <div className="rounded-xl border border-slate-200 p-3 space-y-2">
-            <p className="text-xs font-bold text-slate-700">Add a range (at the default lunch time)</p>
+            <p className="text-xs font-bold text-slate-700">Add a range (at the default start time)</p>
             <DateRangeFields range={range} setRange={setRange} />
             <button
               type="button"
@@ -1267,7 +1286,7 @@ const OrganizerHub = ({ user, googleEmail, isSuperAdmin, isApprovedOrganizer, ro
         <div className="flex items-start justify-between gap-3">
           <div>
             <h1 className="text-xl sm:text-2xl font-extrabold">Organizer hub</h1>
-            <p className="text-xs sm:text-sm text-sky-100/90 mt-1">Create lunch polls from the template, reuse past events, and manage organizers.</p>
+            <p className="text-xs sm:text-sm text-sky-100/90 mt-1">Create event polls from the template, reuse past events, and manage organizers.</p>
           </div>
           {googleEmail && (
             <button type="button" onClick={onSignOut} className="shrink-0 inline-flex items-center gap-1 text-xs underline underline-offset-2 text-sky-100">
@@ -1414,7 +1433,7 @@ const OrganizerHub = ({ user, googleEmail, isSuperAdmin, isApprovedOrganizer, ro
       )}
 
       <p className="text-center text-xs text-slate-500">
-        <a href={eventUrl(DEFAULT_ROOM_ID)} className="underline underline-offset-2">Back to the lunch poll</a>
+        <a href={eventUrl(DEFAULT_ROOM_ID)} className="underline underline-offset-2">Back to the poll</a>
       </p>
     </main>
   );
@@ -1479,6 +1498,7 @@ function App() {
 
   // Event Metadata State (Synced in real time with Firebase Firestore)
   const [eventData, setEventData] = useState(() => normalizeEvent({ title: 'Loading…' }));
+  const W = kindWords(eventData.eventKind);
 
   // All Participants State (Synced in real time from Firestore subcollection)
   const [participants, setParticipants] = useState([]);
@@ -1663,7 +1683,7 @@ function App() {
       roomDocRef,
       async (snap) => {
         if (snap.exists()) {
-          setEventData(normalizeEvent(snap.data()));
+          setEventData(normalizeEvent({ ...(roomId === DEFAULT_ROOM_ID ? { eventKind: 'happy hour' } : {}), ...snap.data() }));
           setRoomStatus('ready');
           setSyncStatus('connected');
         } else {
@@ -2513,7 +2533,7 @@ function App() {
 
   const handleToggleRestaurantVote = async (restaurantId) => {
     if (isRestaurantPollClosed) {
-      triggerToast('Restaurant voting is now closed! You can still RSVP for a lunch date above.', 'info');
+      triggerToast(`Restaurant voting is now closed! You can still RSVP for a ${W.kind} date above.`, 'info');
       return;
     }
     if (!requireIdentity()) return;
@@ -2596,7 +2616,7 @@ function App() {
       await updateDoc(roomDocRef, { restaurantPollForceClosed: nextState });
       triggerToast(
         nextState
-          ? 'Restaurant poll closed! Teammates can still RSVP for lunch dates.'
+          ? `Restaurant poll closed! Teammates can still RSVP for ${W.kind} dates.`
           : 'Restaurant poll reopened for voting.'
       );
     } catch (err) {
@@ -2681,7 +2701,7 @@ function App() {
     const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
     try {
       await updateDoc(roomDocRef, { lockedDateId: nextLockedId });
-      triggerToast(isUnlocking ? 'Unlocked final date.' : 'Holiday lunch date locked in for everyone!');
+      triggerToast(isUnlocking ? 'Unlocked final date.' : `${W.Kind} date locked in for everyone!`);
     } catch (err) {
       console.error('Error locking date:', err);
       triggerToast('Could not change the final date.', 'error');
@@ -2941,7 +2961,7 @@ function App() {
     return (
       <div className="relative z-[1] min-h-screen flex items-center justify-center p-4">
         <div className="max-w-md w-full rounded-2xl bg-white/95 shadow-xl p-6 text-center space-y-3">
-          {roomStatus === 'loading' && <p className="text-sm text-slate-600">Loading the lunch poll…</p>}
+          {roomStatus === 'loading' && <p className="text-sm text-slate-600">Loading the poll…</p>}
           {roomStatus === 'error' && <p className="text-sm text-slate-600">Couldn't connect. Check your connection and refresh the page.</p>}
           {roomStatus === 'missing' && (
             <>
@@ -3367,7 +3387,7 @@ function App() {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-200 text-emerald-900">
-                    Official Lunch Date
+                    Official {W.KIND} Date
                   </span>
                 </div>
                 <h2 className="text-lg sm:text-xl font-extrabold text-emerald-950 mt-1">
@@ -4172,7 +4192,7 @@ function App() {
                 </div>
                 <div>
                   <h4 className="text-sm sm:text-base font-extrabold text-[#0B1F3A]">
-                    Restaurant voting closed on {deadlineDay} — you can still RSVP for a lunch date above, without a restaurant vote.
+                    Restaurant voting closed on {deadlineDay} — you can still RSVP for a {W.kind} date above, without a restaurant vote.
                   </h4>
                   {winningRestaurants.length > 0 ? (
                     <p className="text-xs sm:text-sm text-emerald-700 font-bold mt-1">
@@ -4320,7 +4340,7 @@ function App() {
                 </span>
                 <span>
                   <span className="block text-sm sm:text-base font-extrabold text-[#0B1F3A]">Quick Suggestion Guide</span>
-                  <span className="block text-xs text-slate-600">10 group-friendly lunch spots around Greater Danbury</span>
+                  <span className="block text-xs text-slate-600">10 group-friendly spots around Greater Danbury</span>
                 </span>
               </span>
               <ChevronDown className={`w-5 h-5 text-slate-500 shrink-0 transition-transform ${showGuide ? 'rotate-180' : ''}`} />
@@ -4397,7 +4417,7 @@ function App() {
           {/* Suggested Restaurants List & Live Poll */}
           {restaurantStats.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
-              No restaurant suggestions yet! Add your favorite lunch spot above so the team can vote on it before {deadlineDay}.
+              No restaurant suggestions yet! Add your favorite spot above so the team can vote on it before {deadlineDay}.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
