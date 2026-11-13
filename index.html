@@ -1,0 +1,1858 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Calendar,
+  Users,
+  Share2,
+  Check,
+  Sparkles,
+  Plus,
+  Copy,
+  Trophy,
+  MapPin,
+  Clock,
+  Lock,
+  Unlock,
+  PartyPopper,
+  Trash2,
+  X,
+  UserPlus,
+  ChevronRight,
+  AlertCircle,
+  CalendarPlus,
+  Cloud,
+  Wifi,
+  WifiOff,
+  ExternalLink,
+  Utensils,
+  ThumbsUp,
+  CheckCircle2,
+  Timer
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+  onAuthStateChanged
+} from 'firebase/auth';
+import {
+  getFirestore,
+  doc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  collection,
+  onSnapshot,
+  serverTimestamp
+} from 'firebase/firestore';
+
+// ============================================================================
+// FIREBASE INITIALIZATION
+// ============================================================================
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// Restaurant Poll Cutoff: Friday, November 20, 2026 at 11:59:59 PM EST
+const RESTAURANT_DEADLINE_MS = new Date('2026-11-20T23:59:59-05:00').getTime();
+
+// ============================================================================
+// HELPER UTILITIES & DEFAULT DATA
+// ============================================================================
+
+const generateRoomId = () => {
+  return 'cartus-' + Math.random().toString(36).substring(2, 8);
+};
+
+// Maxim's Primary Directive: First 3 Weeks of December 2026 (Dec 1 – Dec 18)
+const DEFAULT_CANDIDATE_DATES = [
+  // Week 1: Dec 1 – Dec 4, 2026
+  { id: '2026-12-01', dateStr: '2026-12-01', timeLabel: '12:00 PM', tag: 'Week 1 • Kickoff', weekGroup: 1 },
+  { id: '2026-12-02', dateStr: '2026-12-02', timeLabel: '12:00 PM', tag: 'Week 1 • Midweek', weekGroup: 1 },
+  { id: '2026-12-03', dateStr: '2026-12-03', timeLabel: '12:00 PM', tag: 'Week 1', weekGroup: 1 },
+  { id: '2026-12-04', dateStr: '2026-12-04', timeLabel: '12:00 PM', tag: 'Week 1 • Friday', weekGroup: 1 },
+  // Week 2: Dec 7 – Dec 11, 2026
+  { id: '2026-12-07', dateStr: '2026-12-07', timeLabel: '12:00 PM', tag: 'Week 2', weekGroup: 2 },
+  { id: '2026-12-08', dateStr: '2026-12-08', timeLabel: '12:00 PM', tag: 'Week 2', weekGroup: 2 },
+  { id: '2026-12-09', dateStr: '2026-12-09', timeLabel: '12:00 PM', tag: 'Week 2 • Midweek', weekGroup: 2 },
+  { id: '2026-12-10', dateStr: '2026-12-10', timeLabel: '12:00 PM', tag: 'Week 2', weekGroup: 2 },
+  { id: '2026-12-11', dateStr: '2026-12-11', timeLabel: '12:00 PM', tag: 'Week 2 • Friday', weekGroup: 2 },
+  // Week 3: Dec 14 – Dec 18, 2026
+  { id: '2026-12-14', dateStr: '2026-12-14', timeLabel: '12:00 PM', tag: 'Week 3', weekGroup: 3 },
+  { id: '2026-12-15', dateStr: '2026-12-15', timeLabel: '12:00 PM', tag: 'Week 3', weekGroup: 3 },
+  { id: '2026-12-16', dateStr: '2026-12-16', timeLabel: '12:00 PM', tag: 'Week 3 • Midweek', weekGroup: 3 },
+  { id: '2026-12-17', dateStr: '2026-12-17', timeLabel: '12:00 PM', tag: 'Week 3', weekGroup: 3 },
+  { id: '2026-12-18', dateStr: '2026-12-18', timeLabel: '12:00 PM', tag: 'Week 3 • Festive Friday', weekGroup: 3 },
+];
+
+const WEEKEND_CANDIDATE_DATES = [
+  { id: '2026-12-05', dateStr: '2026-12-05', timeLabel: '12:30 PM', tag: 'Week 1 • Saturday', weekGroup: 1, isWeekend: true },
+  { id: '2026-12-06', dateStr: '2026-12-06', timeLabel: '12:30 PM', tag: 'Week 1 • Sunday', weekGroup: 1, isWeekend: true },
+  { id: '2026-12-12', dateStr: '2026-12-12', timeLabel: '12:30 PM', tag: 'Week 2 • Saturday', weekGroup: 2, isWeekend: true },
+  { id: '2026-12-13', dateStr: '2026-12-13', timeLabel: '12:30 PM', tag: 'Week 2 • Sunday', weekGroup: 2, isWeekend: true },
+];
+
+const NEW_YEAR_KICKOFF_DATES = [
+  { id: '2027-01-04', dateStr: '2027-01-04', timeLabel: '12:00 PM', tag: 'New Year 2027 • Kickoff', weekGroup: 4, isNewYear: true },
+  { id: '2027-01-05', dateStr: '2027-01-05', timeLabel: '12:00 PM', tag: 'New Year 2027', weekGroup: 4, isNewYear: true },
+  { id: '2027-01-06', dateStr: '2027-01-06', timeLabel: '12:00 PM', tag: 'New Year 2027', weekGroup: 4, isNewYear: true },
+  { id: '2027-01-07', dateStr: '2027-01-07', timeLabel: '12:00 PM', tag: 'New Year 2027', weekGroup: 4, isNewYear: true },
+  { id: '2027-01-08', dateStr: '2027-01-08', timeLabel: '12:00 PM', tag: 'New Year 2027 • Friday', weekGroup: 4, isNewYear: true },
+];
+
+const AVATAR_COLORS = [
+  'bg-[#005EB8] text-white',
+  'bg-[#0B1F3A] text-white',
+  'bg-emerald-700 text-white',
+  'bg-sky-600 text-white',
+  'bg-amber-600 text-white',
+  'bg-rose-700 text-white',
+  'bg-indigo-700 text-white',
+  'bg-teal-700 text-white',
+];
+
+const formatDateParts = (dateStr) => {
+  if (!dateStr) return { weekday: 'TBD', month: '', day: '?', full: 'Date TBD', year: '' };
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const dateObj = new Date(year, month - 1, day);
+  return {
+    weekday: dateObj.toLocaleDateString('en-US', { weekday: 'short' }),
+    month: dateObj.toLocaleDateString('en-US', { month: 'short' }),
+    day: day,
+    year: year,
+    full: dateObj.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
+  };
+};
+
+const getInitials = (name) => {
+  const parts = (name || '').trim().split(/\s+/);
+  if (parts.length === 0 || !parts[0]) return '?';
+  if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+};
+
+const getAvatarColor = (name) => {
+  let hash = 0;
+  for (let i = 0; i < (name || '').length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+};
+
+const toDocKey = (name) => {
+  return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+};
+
+const CartusITEmblem = () => (
+  <svg viewBox="0 0 64 64" className="w-10 h-10 sm:w-12 sm:h-12 shrink-0" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <rect width="64" height="64" rx="16" fill="url(#cartusGrad)" />
+    <rect x="1.5" y="1.5" width="61" height="61" rx="14.5" stroke="#FBBF24" strokeOpacity="0.4" strokeWidth="1.5" />
+    <path d="M12 36C18 22 46 22 52 36" stroke="#38BDF8" strokeWidth="2.5" strokeLinecap="round" />
+    <path d="M16 42C24 31 40 31 48 42" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" strokeOpacity="0.9" />
+    <circle cx="20" cy="28" r="2.5" fill="#FBBF24" />
+    <circle cx="32" cy="24" r="3" fill="#34D399" />
+    <circle cx="44" cy="28" r="2.5" fill="#F87171" />
+    <path d="M32 10L33.3 13.7L37 15L33.3 16.3L32 20L30.7 16.3L27 15L30.7 13.7L32 10Z" fill="#FDE047" />
+    <text x="32" y="53" textAnchor="middle" fill="#FFFFFF" fontSize="8.5" fontWeight="800" letterSpacing="1.4" fontFamily="system-ui, sans-serif">
+      CARTUS IT
+    </text>
+    <defs>
+      <linearGradient id="cartusGrad" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+        <stop stopColor="#0B1F3A" />
+        <stop offset="0.55" stopColor="#005EB8" />
+        <stop offset="1" stopColor="#0284C7" />
+      </linearGradient>
+    </defs>
+  </svg>
+);
+
+// ============================================================================
+// MAIN APPLICATION COMPONENT
+// ============================================================================
+
+export default function App() {
+  // Room / Poll Identification from URL query parameter (?room=...)
+  const [roomId, setRoomId] = useState(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('room') || 'cartus-it-2026';
+    } catch {
+      return 'cartus-it-2026';
+    }
+  });
+
+  // Firebase Auth & Connection State
+  const [user, setUser] = useState(null);
+  const [syncStatus, setSyncStatus] = useState('connecting');
+
+  // Live Clock State for Restaurant Poll Deadline
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Event Metadata State (Synced in real time with Firebase Firestore)
+  const [eventData, setEventData] = useState({
+    title: 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄🥂',
+    targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
+    location: 'TBD — Vote on Restaurant Suggestions Below!',
+    notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+    dates: DEFAULT_CANDIDATE_DATES,
+    restaurants: [],
+    restaurantPollForceClosed: false,
+    lockedDateId: null,
+    sharedUrl: '',
+  });
+
+  // All Participants State (Synced in real time from Firestore subcollection)
+  const [participants, setParticipants] = useState([]);
+
+  // Current User Interaction State
+  const [voterName, setVoterName] = useState(() => {
+    try {
+      return localStorage.getItem('cartus_it_voter_name_2026') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [selectedWeekFilter, setSelectedWeekFilter] = useState('all');
+
+  // Restaurant Suggestion Inputs
+  const [newRestaurantName, setNewRestaurantName] = useState('');
+  const [newRestaurantNote, setNewRestaurantNote] = useState('');
+
+  // Modal & UI Feedback State
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [showAddDateModal, setShowAddDateModal] = useState(false);
+  const [showNewPollModal, setShowNewPollModal] = useState(false);
+  const [newDateStr, setNewDateStr] = useState('2026-12-10');
+  const [newTimeLabel, setNewTimeLabel] = useState('12:00 PM');
+  const [newPollTitle, setNewPollTitle] = useState('Cartus IT Holiday & New Year Lunch 2026–2027 🎄');
+  const [newPollLocation, setNewPollLocation] = useState('');
+  const [shareUrlInput, setShareUrlInput] = useState('');
+  const [copiedType, setCopiedType] = useState(null);
+  const [toastMessage, setToastMessage] = useState(null);
+
+  // Live clock tick every 30s to evaluate deadline automatically
+  useEffect(() => {
+    const interval = setInterval(() => setNowMs(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Persist local voter name for convenience on refresh
+  useEffect(() => {
+    try {
+      localStorage.setItem('cartus_it_voter_name_2026', voterName);
+    } catch {
+      // Ignore storage restrictions
+    }
+  }, [voterName]);
+
+  // 1. Authenticate Anonymously with Firebase on Mount
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error('Firebase Auth error:', err);
+        setSyncStatus('error');
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Subscribe to Real-Time Room Document & Votes Subcollection in Firestore
+  useEffect(() => {
+    if (!user) return;
+
+    setSyncStatus('connecting');
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    const votesColRef = collection(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes');
+
+    const unsubRoom = onSnapshot(
+      roomDocRef,
+      async (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setEventData({
+            title: data.title || 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄🥂',
+            targetWindow: data.targetWindow || 'First 3 Weeks of December 2026 • Requested by Maxim',
+            location: data.location || 'TBD — Vote on Restaurant Suggestions Below!',
+            notes:
+              data.notes ||
+              'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+            dates: Array.isArray(data.dates) && data.dates.length > 0 ? data.dates : DEFAULT_CANDIDATE_DATES,
+            restaurants: Array.isArray(data.restaurants) ? data.restaurants : [],
+            restaurantPollForceClosed: Boolean(data.restaurantPollForceClosed),
+            lockedDateId: data.lockedDateId || null,
+            sharedUrl: data.sharedUrl || '',
+          });
+          setSyncStatus('connected');
+        } else {
+          // Initialize default shared room in Firestore if it doesn't exist yet
+          const initialPayload = {
+            title: 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄🥂',
+            targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
+            location: 'TBD — Vote on Restaurant Suggestions Below!',
+            notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+            dates: DEFAULT_CANDIDATE_DATES,
+            restaurants: [],
+            restaurantPollForceClosed: false,
+            lockedDateId: null,
+            sharedUrl: '',
+            createdAt: serverTimestamp(),
+          };
+          try {
+            await setDoc(roomDocRef, initialPayload, { merge: true });
+            setSyncStatus('connected');
+          } catch (e) {
+            console.error('Error initializing room:', e);
+            setSyncStatus('error');
+          }
+        }
+      },
+      (err) => {
+        console.error('Firestore room listener error:', err);
+        setSyncStatus('error');
+      }
+    );
+
+    const unsubVotes = onSnapshot(
+      votesColRef,
+      (querySnap) => {
+        const loadedParticipants = [];
+        querySnap.forEach((docSnap) => {
+          const d = docSnap.data();
+          if (d && d.name) {
+            loadedParticipants.push({
+              id: docSnap.id,
+              name: d.name,
+              votes: d.votes || {},
+              restaurantVotes: Array.isArray(d.restaurantVotes) ? d.restaurantVotes : [],
+              rsvpAfterRestaurantClose: Boolean(d.rsvpAfterRestaurantClose),
+              updatedAtMs: d.updatedAtMs || 0,
+            });
+          }
+        });
+        loadedParticipants.sort((a, b) => (a.updatedAtMs || 0) - (b.updatedAtMs || 0));
+        setParticipants(loadedParticipants);
+      },
+      (err) => {
+        console.error('Firestore votes listener error:', err);
+      }
+    );
+
+    return () => {
+      unsubRoom();
+      unsubVotes();
+    };
+  }, [user, roomId]);
+
+  const triggerToast = (msg, type = 'success') => {
+    setToastMessage({ text: msg, type });
+    setTimeout(() => setToastMessage(null), 3400);
+  };
+
+  // ============================================================================
+  // DERIVED POLL STATE (DATES & RESTAURANTS)
+  // ============================================================================
+
+  const normalizedVoterName = voterName.trim();
+  const activeParticipant = useMemo(() => {
+    if (!normalizedVoterName) return null;
+    return participants.find((p) => p.name.toLowerCase() === normalizedVoterName.toLowerCase()) || null;
+  }, [participants, normalizedVoterName]);
+
+  const isDeadlinePassed = nowMs >= RESTAURANT_DEADLINE_MS;
+  const isRestaurantPollClosed = eventData.restaurantPollForceClosed || isDeadlinePassed;
+
+  const countdownLabel = useMemo(() => {
+    if (isRestaurantPollClosed) {
+      return isDeadlinePassed
+        ? 'Closed • Deadline Passed (Fri, Nov 20)'
+        : 'Closed Early by Host • Restaurant Selection Locked';
+    }
+    const diff = Math.max(0, RESTAURANT_DEADLINE_MS - nowMs);
+    const totalMinutes = Math.floor(diff / 60000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const mins = totalMinutes % 60;
+    const parts = [];
+    if (days > 0) parts.push(`${days}d`);
+    parts.push(`${hours}h`);
+    parts.push(`${mins}m`);
+    return `Closes Fri, Nov 20, 11:59 PM (${parts.join(' ')} left)`;
+  }, [nowMs, isRestaurantPollClosed, isDeadlinePassed]);
+
+  const dateStats = useMemo(() => {
+    return eventData.dates.map((d) => {
+      const yesPeople = [];
+      participants.forEach((p) => {
+        const val = p.votes?.[d.id];
+        if (val === 'yes' || val === 'maybe') {
+          yesPeople.push(p.name);
+        }
+      });
+      return {
+        ...d,
+        yesCount: yesPeople.length,
+        yesPeople,
+      };
+    });
+  }, [eventData.dates, participants]);
+
+  const topDates = useMemo(() => {
+    return [...dateStats].sort((a, b) => b.yesCount - a.yesCount);
+  }, [dateStats]);
+
+  const maxYesCount = topDates.length > 0 ? topDates[0].yesCount : 0;
+
+  const restaurantStats = useMemo(() => {
+    return (eventData.restaurants || [])
+      .map((rest) => {
+        const voters = participants
+          .filter((p) => Array.isArray(p.restaurantVotes) && p.restaurantVotes.includes(rest.id))
+          .map((p) => p.name);
+        return {
+          ...rest,
+          voteCount: voters.length,
+          voters,
+        };
+      })
+      .sort((a, b) => b.voteCount - a.voteCount);
+  }, [eventData.restaurants, participants]);
+
+  const topRestaurantVoteCount = restaurantStats.length > 0 ? restaurantStats[0].voteCount : 0;
+  const winningRestaurants = useMemo(() => {
+    if (topRestaurantVoteCount === 0) return [];
+    return restaurantStats.filter((r) => r.voteCount === topRestaurantVoteCount);
+  }, [restaurantStats, topRestaurantVoteCount]);
+
+  const hasWeekendsEnabled = useMemo(() => {
+    return eventData.dates.some((d) => d.isWeekend);
+  }, [eventData.dates]);
+
+  const hasNewYearEnabled = useMemo(() => {
+    return eventData.dates.some((d) => d.isNewYear);
+  }, [eventData.dates]);
+
+  const filteredDates = useMemo(() => {
+    if (selectedWeekFilter === 'all') return dateStats;
+    return dateStats.filter((d) => String(d.weekGroup) === String(selectedWeekFilter));
+  }, [dateStats, selectedWeekFilter]);
+
+  const activeUserYesCount = useMemo(() => {
+    if (!activeParticipant) return 0;
+    return Object.values(activeParticipant.votes || {}).filter((v) => v === 'yes' || v === 'maybe').length;
+  }, [activeParticipant]);
+
+  // ============================================================================
+  // FIRESTORE REAL-TIME ACTIONS
+  // ============================================================================
+
+  const handleToggleDate = async (dateId) => {
+    if (!normalizedVoterName) {
+      triggerToast('Enter your name first in Step 1 so everyone sees your pick!', 'error');
+      const nameInput = document.getElementById('voter-name-input');
+      if (nameInput) nameInput.focus();
+      return;
+    }
+    if (!user) {
+      triggerToast('Connecting to live cloud database... try again in a second.', 'info');
+      return;
+    }
+
+    const docKey = activeParticipant ? activeParticipant.id : toDocKey(normalizedVoterName);
+    const currentVotes = activeParticipant ? { ...activeParticipant.votes } : {};
+    const isCurrentlySelected = currentVotes[dateId] === 'yes' || currentVotes[dateId] === 'maybe';
+
+    if (isCurrentlySelected) {
+      delete currentVotes[dateId];
+    } else {
+      currentVotes[dateId] = 'yes';
+    }
+
+    const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey);
+    try {
+      const isLateRsvp = !activeParticipant && isRestaurantPollClosed;
+      await setDoc(
+        voteDocRef,
+        {
+          name: activeParticipant ? activeParticipant.name : normalizedVoterName,
+          votes: currentVotes,
+          restaurantVotes: activeParticipant ? activeParticipant.restaurantVotes || [] : [],
+          rsvpAfterRestaurantClose: activeParticipant
+            ? Boolean(activeParticipant.rsvpAfterRestaurantClose)
+            : isLateRsvp,
+          updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Error saving date vote:', err);
+      triggerToast('Could not sync date pick. Check connection.', 'error');
+    }
+  };
+
+  const handleAddRestaurantSuggestion = async (e) => {
+    e.preventDefault();
+    if (isRestaurantPollClosed) {
+      triggerToast('Restaurant suggestions closed on Friday, Nov 20.', 'info');
+      return;
+    }
+    if (!user) return;
+
+    const cleanName = newRestaurantName.trim();
+    if (!cleanName) {
+      triggerToast('Please enter a restaurant name.', 'error');
+      return;
+    }
+
+    const exists = (eventData.restaurants || []).some(
+      (r) => r.name.toLowerCase() === cleanName.toLowerCase()
+    );
+    if (exists) {
+      triggerToast('That restaurant is already on the list — tap Vote on it below!', 'info');
+      setNewRestaurantName('');
+      setNewRestaurantNote('');
+      return;
+    }
+
+    const newRestObj = {
+      id: 'rest-' + Date.now(),
+      name: cleanName,
+      note: newRestaurantNote.trim(),
+      suggestedBy: normalizedVoterName || 'Cartus IT Member',
+    };
+
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    try {
+      await updateDoc(roomDocRef, {
+        restaurants: [...(eventData.restaurants || []), newRestObj],
+      });
+
+      if (normalizedVoterName) {
+        const docKey = activeParticipant ? activeParticipant.id : toDocKey(normalizedVoterName);
+        const currentRestVotes = activeParticipant ? [...(activeParticipant.restaurantVotes || [])] : [];
+        if (!currentRestVotes.includes(newRestObj.id)) {
+          currentRestVotes.push(newRestObj.id);
+        }
+        const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey);
+        await setDoc(
+          voteDocRef,
+          {
+            name: activeParticipant ? activeParticipant.name : normalizedVoterName,
+            votes: activeParticipant ? activeParticipant.votes || {} : {},
+            restaurantVotes: currentRestVotes,
+            rsvpAfterRestaurantClose: false,
+            updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
+          },
+          { merge: true }
+        );
+      }
+
+      setNewRestaurantName('');
+      setNewRestaurantNote('');
+      triggerToast(`Added "${cleanName}" to the restaurant poll!`);
+    } catch (err) {
+      console.error('Error adding restaurant:', err);
+      triggerToast('Could not add restaurant suggestion.', 'error');
+    }
+  };
+
+  const handleToggleRestaurantVote = async (restaurantId) => {
+    if (isRestaurantPollClosed) {
+      triggerToast('Restaurant voting is now closed! You can still RSVP for a lunch date above.', 'info');
+      return;
+    }
+    if (!normalizedVoterName) {
+      triggerToast('Enter your name in Step 1 before voting on a restaurant!', 'error');
+      const nameInput = document.getElementById('voter-name-input');
+      if (nameInput) nameInput.focus();
+      return;
+    }
+    if (!user) return;
+
+    const docKey = activeParticipant ? activeParticipant.id : toDocKey(normalizedVoterName);
+    const currentRestVotes = activeParticipant ? [...(activeParticipant.restaurantVotes || [])] : [];
+    const idx = currentRestVotes.indexOf(restaurantId);
+    if (idx >= 0) {
+      currentRestVotes.splice(idx, 1);
+    } else {
+      currentRestVotes.push(restaurantId);
+    }
+
+    const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey);
+    try {
+      await setDoc(
+        voteDocRef,
+        {
+          name: activeParticipant ? activeParticipant.name : normalizedVoterName,
+          votes: activeParticipant ? activeParticipant.votes || {} : {},
+          restaurantVotes: currentRestVotes,
+          rsvpAfterRestaurantClose: false,
+          updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Error voting on restaurant:', err);
+      triggerToast('Could not save restaurant vote.', 'error');
+    }
+  };
+
+  const handleToggleRestaurantPollClose = async () => {
+    if (!user) return;
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    const nextState = !eventData.restaurantPollForceClosed;
+    try {
+      await updateDoc(roomDocRef, { restaurantPollForceClosed: nextState });
+      triggerToast(
+        nextState
+          ? 'Restaurant poll closed! Teammates can still RSVP for lunch dates.'
+          : 'Restaurant poll reopened for voting.'
+      );
+    } catch (err) {
+      console.error('Error toggling restaurant poll state:', err);
+    }
+  };
+
+  const handleToggleWeekends = async () => {
+    if (!user) return;
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    let updatedDates;
+    if (hasWeekendsEnabled) {
+      updatedDates = eventData.dates.filter((d) => !d.isWeekend);
+      triggerToast('Removed December weekend slots');
+    } else {
+      const existingIds = new Set(eventData.dates.map((d) => d.id));
+      const toAdd = WEEKEND_CANDIDATE_DATES.filter((d) => !existingIds.has(d.id));
+      updatedDates = [...eventData.dates, ...toAdd].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+      triggerToast('Added December weekend slots for everyone');
+    }
+    try {
+      await updateDoc(roomDocRef, { dates: updatedDates });
+    } catch (err) {
+      console.error('Error updating weekends:', err);
+    }
+  };
+
+  const handleToggleNewYearWeek = async () => {
+    if (!user) return;
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    let updatedDates;
+    if (hasNewYearEnabled) {
+      updatedDates = eventData.dates.filter((d) => !d.isNewYear);
+      if (selectedWeekFilter === '4') setSelectedWeekFilter('all');
+      triggerToast('Removed New Year 2027 Kickoff week');
+    } else {
+      const existingIds = new Set(eventData.dates.map((d) => d.id));
+      const toAdd = NEW_YEAR_KICKOFF_DATES.filter((d) => !existingIds.has(d.id));
+      updatedDates = [...eventData.dates, ...toAdd].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+      triggerToast('Added New Year 2027 Kickoff Week (Jan 4–8)');
+    }
+    try {
+      await updateDoc(roomDocRef, { dates: updatedDates });
+    } catch (err) {
+      console.error('Error updating New Year dates:', err);
+    }
+  };
+
+  const handleAddCustomDate = async (e) => {
+    e.preventDefault();
+    if (!newDateStr || !user) return;
+
+    const id = `${newDateStr}-${newTimeLabel.replace(/\s+/g, '')}`;
+    if (eventData.dates.some((d) => d.id === id)) {
+      triggerToast('That date & time is already on the poll!', 'info');
+      return;
+    }
+
+    const [, month, day] = newDateStr.split('-').map(Number);
+    let weekGroup = 0;
+    let tag = 'Custom Date';
+    if (newDateStr.startsWith('2026-12')) {
+      if (day <= 6) { weekGroup = 1; tag = 'Week 1 • Custom'; }
+      else if (day <= 13) { weekGroup = 2; tag = 'Week 2 • Custom'; }
+      else if (day <= 20) { weekGroup = 3; tag = 'Week 3 • Custom'; }
+      else { weekGroup = 3; tag = 'Late Dec • Custom'; }
+    } else if (newDateStr.startsWith('2027-01')) {
+      weekGroup = 4;
+      tag = 'New Year 2027 • Custom';
+    }
+
+    const updatedDates = [
+      ...eventData.dates,
+      { id, dateStr: newDateStr, timeLabel: newTimeLabel, tag, weekGroup },
+    ].sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    try {
+      await updateDoc(roomDocRef, { dates: updatedDates });
+      setShowAddDateModal(false);
+      triggerToast('Added new date option for the whole team!');
+    } catch (err) {
+      console.error('Error adding date:', err);
+    }
+  };
+
+  const handleRemoveDate = async (dateId) => {
+    if (eventData.dates.length <= 1) {
+      triggerToast('Keep at least one date option in the poll.', 'error');
+      return;
+    }
+    const updatedDates = eventData.dates.filter((d) => d.id !== dateId);
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    try {
+      await updateDoc(roomDocRef, {
+        dates: updatedDates,
+        lockedDateId: eventData.lockedDateId === dateId ? null : eventData.lockedDateId,
+      });
+      triggerToast('Removed date option');
+    } catch (err) {
+      console.error('Error removing date:', err);
+    }
+  };
+
+  const handleLockDate = async (dateId) => {
+    if (!user) return;
+    const isUnlocking = eventData.lockedDateId === dateId;
+    const nextLockedId = isUnlocking ? null : dateId;
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    try {
+      await updateDoc(roomDocRef, { lockedDateId: nextLockedId });
+      triggerToast(isUnlocking ? 'Unlocked final date.' : 'Holiday lunch date locked in for everyone!');
+    } catch (err) {
+      console.error('Error locking date:', err);
+    }
+  };
+
+  const handleRemoveParticipant = async (participantId, name) => {
+    if (!user) return;
+    const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', participantId);
+    try {
+      await deleteDoc(voteDocRef);
+      triggerToast(`Removed ${name} from the roster.`);
+    } catch (err) {
+      console.error('Error deleting participant:', err);
+    }
+  };
+
+  const handleCreateNewRoom = async (e) => {
+    e.preventDefault();
+    if (!user) return;
+    const newId = generateRoomId();
+    const initialPayload = {
+      title: newPollTitle.trim() || 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄',
+      targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
+      location: newPollLocation.trim() || 'TBD — Vote on Restaurant Suggestions Below!',
+      notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+      dates: DEFAULT_CANDIDATE_DATES,
+      restaurants: [],
+      restaurantPollForceClosed: false,
+      lockedDateId: null,
+      sharedUrl: '',
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      const newRoomRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', newId);
+      await setDoc(newRoomRef, initialPayload);
+      setRoomId(newId);
+      setShowNewPollModal(false);
+      triggerToast(`Created fresh live room (${newId})!`);
+    } catch (err) {
+      console.error('Error creating new room:', err);
+      triggerToast('Failed to create new room.', 'error');
+    }
+  };
+
+  const handleSavePublicShareUrl = async (urlVal) => {
+    setShareUrlInput(urlVal);
+    if (!user) return;
+    const cleaned = urlVal.trim();
+    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    try {
+      await updateDoc(roomDocRef, { sharedUrl: cleaned });
+    } catch (err) {
+      console.error('Error saving shared URL:', err);
+    }
+  };
+
+  // ============================================================================
+  // COPY & SHARE HELPERS
+  // ============================================================================
+
+  const copyToClipboard = async (text, typeKey) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setCopiedType(typeKey);
+    triggerToast('Copied to clipboard — ready to paste in chat!');
+    setTimeout(() => setCopiedType(null), 2500);
+  };
+
+  const savedShareUrl = (shareUrlInput || eventData.sharedUrl || '').trim();
+
+  const groupChatInviteText = useMemo(() => {
+    const restLine =
+      restaurantStats.length > 0
+        ? `\n🍽️ Restaurant Poll (${isRestaurantPollClosed ? 'Closed' : 'Closes Fri, Nov 20'}): ${restaurantStats
+            .slice(0, 3)
+            .map((r) => `${r.name} (${r.voteCount})`)
+            .join(' • ')}`
+        : '\n🍽️ Restaurant Poll: Open until Fri, Nov 20 at 11:59 PM — suggest & vote on a spot!';
+    const linkLine = savedShareUrl ? `\n\nTap here to enter your name & pick a date:\n${savedShareUrl}` : '';
+    return `🎄 *${eventData.title}* 🥂\n🔵 *Cartus IT Team • Christmas & New Year 2026–2027*\n🗓️ Primary Window: First 3 Weeks of December 2026 (Dec 1 – Dec 18) — Requested by Maxim${restLine}\n\nHey Cartus IT! Just enter your name and tap the December dates that work for you (you can also see who already picked each date!):${linkLine}`;
+  }, [eventData, savedShareUrl, restaurantStats, isRestaurantPollClosed]);
+
+  const finalAnnouncementText = useMemo(() => {
+    const lockedObj = dateStats.find((d) => d.id === eventData.lockedDateId);
+    if (!lockedObj) return '';
+    const formatted = formatDateParts(lockedObj.dateStr);
+    const winningRest = winningRestaurants.length > 0 ? winningRestaurants.map((r) => r.name).join(' / ') : eventData.location;
+    const linkLine = savedShareUrl ? `\n🔗 Poll Board: ${savedShareUrl}` : '';
+    return `🎉 *CONFIRMED: ${eventData.title}* 🎉\n🔵 *Cartus IT Holiday & New Year Celebration*\n\n📅 *Date:* ${formatted.full}\n⏰ *Time:* ${lockedObj.timeLabel}\n🍽️ *Restaurant:* ${winningRest}\n👥 *Confirmed Attendees (${lockedObj.yesCount}):* ${lockedObj.yesPeople.join(', ') || 'Team'}${linkLine}\n\nHappy Holidays & Happy New Year 2027, Cartus IT! 🎄🥂`;
+  }, [eventData, dateStats, savedShareUrl, winningRestaurants]);
+
+  const lockedDateObj = dateStats.find((d) => d.id === eventData.lockedDateId);
+
+  // ============================================================================
+  // RENDER UI (iPhone & Mobile Safari First)
+  // ============================================================================
+
+  return (
+    <div
+      className="min-h-screen bg-[#F1F5F9] text-slate-800 selection:bg-[#00A3E0]/20 selection:text-[#0B1F3A] overflow-x-hidden"
+      style={{ paddingBottom: 'calc(5.5rem + env(safe-area-inset-bottom, 0px))' }}
+    >
+      {/* Floating Toast Notification */}
+      {toastMessage && (
+        <div
+          className="fixed left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-50 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl shadow-xl bg-[#0B1F3A] text-white text-sm font-medium border border-[#00A3E0]/40"
+          style={{ bottom: 'calc(4.75rem + env(safe-area-inset-bottom, 0px))' }}
+        >
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          <span className="truncate">{toastMessage.text}</span>
+        </div>
+      )}
+
+      {/* Cartus IT Top Navigation Bar (Safe-Area Aware) */}
+      <header
+        className="sticky top-0 z-30 bg-[#0B1F3A]/95 backdrop-blur-md border-b border-[#005EB8]/40 text-white"
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+      >
+        <div className="max-w-5xl mx-auto px-3 sm:px-6 py-2.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <CartusITEmblem />
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-bold text-base sm:text-lg tracking-tight text-white truncate">FestiveTable</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#005EB8] text-sky-100 border border-[#00A3E0]/50">
+                  Cartus IT
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                {syncStatus === 'connected' ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-300">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Live Sync
+                  </span>
+                ) : syncStatus === 'connecting' ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-300">
+                    <Cloud className="w-3 h-3 animate-bounce" />
+                    Syncing...
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-medium text-rose-300">
+                    <WifiOff className="w-3 h-3" />
+                    Offline
+                  </span>
+                )}
+                <span className="text-[11px] text-sky-300/70 hidden xs:inline">• 2026–2027</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+            <button
+              onClick={() => setShowNewPollModal(true)}
+              className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-3 py-2 rounded-xl text-xs font-semibold text-sky-100 bg-white/10 hover:bg-white/15 active:scale-[0.98] transition-all border border-white/15 touch-manipulation"
+              title="Start a separate group poll room"
+            >
+              <Plus className="w-4 h-4 text-[#00A3E0]" />
+              <span className="hidden sm:inline">New Room</span>
+            </button>
+            <button
+              onClick={() => {
+                setShareUrlInput(eventData.sharedUrl || '');
+                setShowShareModal(true);
+              }}
+              className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold text-white bg-gradient-to-r from-[#005EB8] to-[#00A3E0] hover:brightness-110 active:scale-[0.98] shadow-md shadow-sky-950/50 transition-all touch-manipulation"
+            >
+              <Share2 className="w-4 h-4 shrink-0" />
+              <span>Share</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-3 sm:px-6 pt-4 sm:pt-6 space-y-5 sm:space-y-6">
+        {/* Cartus IT Hero Event Banner */}
+        <section className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#0B1F3A] via-[#102A4C] to-[#004A99] text-white p-4 sm:p-8 shadow-xl shadow-slate-900/15 border border-[#00A3E0]/30">
+          <div className="absolute -right-12 -top-12 w-56 h-56 rounded-full bg-[#00A3E0]/15 blur-2xl pointer-events-none" />
+          <div className="absolute right-8 -bottom-16 w-48 h-48 rounded-full bg-amber-400/15 blur-2xl pointer-events-none" />
+
+          <div className="relative z-10 flex flex-col gap-4">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-400/20 text-amber-200 text-[11px] sm:text-xs font-bold border border-amber-300/30">
+                <Sparkles className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                {eventData.targetWindow}
+              </span>
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white/10 text-sky-100 text-[11px] sm:text-xs font-medium border border-white/15">
+                <Users className="w-3.5 h-3.5 text-[#00A3E0]" />
+                {participants.length} {participants.length === 1 ? 'person' : 'people'} in
+              </span>
+            </div>
+
+            <div>
+              <h1 className="text-xl sm:text-3xl font-extrabold tracking-tight leading-snug text-white">
+                {eventData.title}
+              </h1>
+              <p className="mt-1.5 text-sky-100/90 text-xs sm:text-sm max-w-3xl leading-relaxed">
+                {eventData.notes}
+              </p>
+            </div>
+
+            {/* Mobile-Friendly Schedule Scope Controls */}
+            <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-stretch sm:items-center gap-2 pt-1">
+              <button
+                onClick={handleToggleWeekends}
+                className={`inline-flex items-center justify-center sm:justify-start gap-2 min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all border touch-manipulation ${
+                  hasWeekendsEnabled
+                    ? 'bg-[#00A3E0] text-[#0B1F3A] border-[#00A3E0] shadow-sm font-bold'
+                    : 'bg-white/10 text-sky-100 border-white/20 hover:bg-white/15'
+                }`}
+              >
+                <CalendarPlus className="w-4 h-4 shrink-0" />
+                <span>{hasWeekendsEnabled ? 'Dec Weekends Included' : '+ Include Dec Weekends'}</span>
+              </button>
+
+              <button
+                onClick={handleToggleNewYearWeek}
+                className={`inline-flex items-center justify-center sm:justify-start gap-2 min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all border touch-manipulation ${
+                  hasNewYearEnabled
+                    ? 'bg-amber-400 text-[#0B1F3A] border-amber-300 shadow-sm font-bold'
+                    : 'bg-white/10 text-sky-100 border-white/20 hover:bg-white/15'
+                }`}
+              >
+                <PartyPopper className="w-4 h-4 shrink-0" />
+                <span>{hasNewYearEnabled ? 'New Year 2027 Included' : '+ New Year 2027 (Jan 4–8)'}</span>
+              </button>
+
+              <button
+                onClick={() => setShowAddDateModal(true)}
+                className="inline-flex items-center justify-center sm:justify-start gap-2 min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-white/10 text-white border border-white/20 hover:bg-white/15 transition-all touch-manipulation"
+              >
+                <Plus className="w-4 h-4 text-sky-300 shrink-0" />
+                <span>Add Custom Date</span>
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Locked Date Confirmation Banner (If Finalized) */}
+        {lockedDateObj && (
+          <section className="rounded-2xl bg-emerald-50 border-2 border-emerald-500 p-4 sm:p-6 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-11 h-11 rounded-2xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                <PartyPopper className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-200 text-emerald-900">
+                    Official Cartus IT Lunch Date
+                  </span>
+                </div>
+                <h2 className="text-lg sm:text-xl font-extrabold text-emerald-950 mt-1">
+                  {formatDateParts(lockedDateObj.dateStr).full} at {lockedDateObj.timeLabel}
+                </h2>
+                <p className="text-xs sm:text-sm text-emerald-800 mt-1">
+                  <span className="font-semibold">{lockedDateObj.yesCount} teammates confirmed:</span>{' '}
+                  {lockedDateObj.yesPeople.join(', ') || 'Team'}
+                </p>
+                {winningRestaurants.length > 0 && (
+                  <p className="text-xs sm:text-sm text-emerald-900 mt-1 font-semibold">
+                    🍽️ Leading Restaurant: {winningRestaurants.map((r) => r.name).join(' / ')}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-col xs:flex-row sm:flex-wrap items-stretch xs:items-center gap-2 shrink-0">
+              <button
+                onClick={() => copyToClipboard(finalAnnouncementText, 'final')}
+                className="inline-flex items-center justify-center gap-2 min-h-[44px] px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold shadow-sm transition-all touch-manipulation"
+              >
+                {copiedType === 'final' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedType === 'final' ? 'Copied!' : 'Copy Announcement'}</span>
+              </button>
+              <button
+                onClick={() => handleLockDate(lockedDateObj.id)}
+                className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-3 py-2.5 rounded-xl bg-white hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold transition-all touch-manipulation"
+              >
+                <Unlock className="w-3.5 h-3.5" />
+                <span>Unlock</span>
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ==================================================================== */}
+        {/* STEP 1: ENTER YOUR NAME (16px font prevents iOS Safari auto-zoom)    */}
+        {/* ==================================================================== */}
+        <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+          <div className="flex items-center gap-2.5 mb-3">
+            <span className="w-7 h-7 rounded-full bg-[#005EB8] text-white text-xs font-extrabold flex items-center justify-center shrink-0">
+              1
+            </span>
+            <div>
+              <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">Enter Your Name</h2>
+              <p className="text-xs text-slate-500">Type your name below, then tap any date(s) that work for you.</p>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+            <div className="relative flex-1">
+              <UserPlus className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                id="voter-name-input"
+                type="text"
+                autoComplete="name"
+                enterKeyHint="done"
+                value={voterName}
+                onChange={(e) => setVoterName(e.target.value)}
+                placeholder="e.g., Maxim, Sarah, Alex..."
+                className="w-full min-h-[48px] pl-10 pr-10 py-3 rounded-xl border-2 border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base font-semibold text-slate-900 outline-none transition-all"
+              />
+              {voterName && (
+                <button
+                  type="button"
+                  onClick={() => setVoterName('')}
+                  aria-label="Clear name"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 touch-manipulation"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {normalizedVoterName ? (
+              <div className="flex items-center justify-between sm:justify-start gap-2.5 px-3.5 py-2.5 rounded-xl bg-sky-50 border border-sky-200 text-xs sm:text-sm">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${getAvatarColor(
+                      normalizedVoterName
+                    )}`}
+                  >
+                    {getInitials(normalizedVoterName)}
+                  </span>
+                  <span className="font-bold text-[#0B1F3A] truncate">{normalizedVoterName}</span>
+                </div>
+                <span className="text-[#005EB8] font-bold shrink-0 bg-white px-2.5 py-1 rounded-lg border border-sky-200">
+                  {activeUserYesCount} {activeUserYesCount === 1 ? 'date' : 'dates'}
+                </span>
+              </div>
+            ) : (
+              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-3.5 py-3 rounded-xl font-medium">
+                👈 Enter your name first to tap dates
+              </div>
+            )}
+          </div>
+
+          {/* Quick-Switch Existing Teammate Pills */}
+          {participants.length > 0 && (
+            <div className="mt-3.5 pt-3 border-t border-slate-100 flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+              <span className="text-[11px] font-semibold text-slate-400 shrink-0">Already in:</span>
+              {participants.map((p) => {
+                const isSelectedUser = p.name.toLowerCase() === normalizedVoterName.toLowerCase();
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setVoterName(p.name)}
+                    className={`inline-flex items-center gap-1.5 min-h-[36px] px-3 py-1 rounded-full text-xs font-semibold transition-all border shrink-0 touch-manipulation ${
+                      isSelectedUser
+                        ? 'bg-[#005EB8] text-white border-[#005EB8] shadow-sm'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-sky-50'
+                    }`}
+                  >
+                    <span>{p.name}</span>
+                    {p.rsvpAfterRestaurantClose && (
+                      <span className="text-[9px] uppercase px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-bold">
+                        Late RSVP
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* ==================================================================== */}
+        {/* STEP 2: CHOOSE A DATE (SEE WHO ALREADY CHOSE EACH DATE)              */}
+        {/* ==================================================================== */}
+        <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <span className="w-7 h-7 rounded-full bg-[#005EB8] text-white text-xs font-extrabold flex items-center justify-center shrink-0">
+                2
+              </span>
+              <div>
+                <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">
+                  Choose Dates That Work For You
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Tap any date to mark yourself in — see who already picked each day!
+                </p>
+              </div>
+            </div>
+
+            {/* Horizontally Scrollable Week Filter Pills on iPhone */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mx-1 px-1">
+              {[
+                { key: 'all', label: 'All Dates' },
+                { key: '1', label: 'Week 1 (Dec 1–4)' },
+                { key: '2', label: 'Week 2 (Dec 7–11)' },
+                { key: '3', label: 'Week 3 (Dec 14–18)' },
+                ...(hasNewYearEnabled ? [{ key: '4', label: 'Jan 4–8' }] : []),
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  onClick={() => setSelectedWeekFilter(tab.key)}
+                  className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-bold transition-all shrink-0 touch-manipulation ${
+                    selectedWeekFilter === tab.key
+                      ? 'bg-[#0B1F3A] text-white shadow-sm'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Date Cards Grid (1 col on iPhone, 2 cols on iPad/Desktop) */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {filteredDates.map((d) => {
+              const parts = formatDateParts(d.dateStr);
+              const myVote = activeParticipant?.votes?.[d.id];
+              const isChosenByMe = myVote === 'yes' || myVote === 'maybe';
+              const isTopDate = maxYesCount > 0 && d.yesCount === maxYesCount;
+              const isLocked = eventData.lockedDateId === d.id;
+              const pct = participants.length > 0 ? Math.round((d.yesCount / participants.length) * 100) : 0;
+
+              return (
+                <div
+                  key={d.id}
+                  onClick={() => handleToggleDate(d.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleToggleDate(d.id);
+                    }
+                  }}
+                  className={`group relative rounded-2xl p-3.5 sm:p-4 border-2 cursor-pointer transition-all select-none touch-manipulation active:scale-[0.99] ${
+                    isLocked
+                      ? 'border-emerald-500 bg-emerald-50/60 shadow-sm'
+                      : isChosenByMe
+                      ? 'border-[#005EB8] bg-sky-50/75 shadow-sm'
+                      : 'border-slate-200 hover:border-[#00A3E0] bg-white'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2.5">
+                    {/* Calendar Date Badge + Label */}
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div
+                        className={`w-13 h-13 sm:w-14 sm:h-14 rounded-xl flex flex-col items-center justify-center shrink-0 border transition-colors ${
+                          isChosenByMe
+                            ? 'bg-[#005EB8] text-white border-[#005EB8]'
+                            : 'bg-[#0B1F3A] text-white border-[#0B1F3A]'
+                        }`}
+                      >
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-sky-200 leading-none">
+                          {parts.month}
+                        </span>
+                        <span className="text-lg sm:text-xl font-extrabold leading-tight mt-0.5">{parts.day}</span>
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-extrabold text-sm sm:text-base text-[#0B1F3A]">
+                            {parts.weekday}, {parts.month} {parts.day}
+                          </span>
+                          {isTopDate && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                              <Trophy className="w-2.5 h-2.5 text-amber-600" />
+                              Top
+                            </span>
+                          )}
+                          {isLocked && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-emerald-600 text-white">
+                              <Lock className="w-2.5 h-2.5" />
+                              Locked
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1.5 text-xs text-slate-500 mt-0.5">
+                          <span>{d.timeLabel}</span>
+                          {d.tag && (
+                            <>
+                              <span>•</span>
+                              <span className="font-medium text-[#005EB8] truncate">{d.tag}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Side: Action Toggle + Admin Lock/Delete */}
+                    <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleDate(d.id)}
+                        className={`inline-flex items-center justify-center gap-1.5 min-h-[42px] px-3 py-2 rounded-xl text-xs font-extrabold transition-all touch-manipulation ${
+                          isChosenByMe
+                            ? 'bg-[#005EB8] text-white shadow-sm'
+                            : 'bg-slate-100 text-slate-700 hover:bg-sky-100 hover:text-[#005EB8]'
+                        }`}
+                      >
+                        {isChosenByMe ? (
+                          <>
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                            <span>In!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-4 h-4 shrink-0" />
+                            <span>Pick</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleLockDate(d.id)}
+                        title={isLocked ? 'Unlock date' : 'Lock in this date for the team'}
+                        className={`w-10 h-10 flex items-center justify-center rounded-xl transition-colors touch-manipulation ${
+                          isLocked
+                            ? 'bg-emerald-600 text-white'
+                            : 'text-slate-400 hover:text-[#005EB8] hover:bg-slate-100'
+                        }`}
+                      >
+                        {isLocked ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveDate(d.id)}
+                        title="Remove date option"
+                        className="w-9 h-9 hidden sm:flex items-center justify-center rounded-xl text-slate-300 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Who Already Chose This Date */}
+                  <div className="mt-3 pt-2.5 border-t border-slate-100">
+                    <div className="flex items-center justify-between text-xs mb-1.5">
+                      <span className="font-bold text-slate-700">
+                        {d.yesCount === 0
+                          ? 'No picks yet — be the first!'
+                          : `${d.yesCount} ${d.yesCount === 1 ? 'person' : 'people'} can make it`}
+                      </span>
+                      {participants.length > 0 && d.yesCount > 0 && (
+                        <span className="text-[11px] font-semibold text-slate-400">{pct}%</span>
+                      )}
+                    </div>
+
+                    <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden mb-2">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          isLocked ? 'bg-emerald-500' : 'bg-gradient-to-r from-[#005EB8] to-[#00A3E0]'
+                        }`}
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+
+                    {d.yesPeople.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {d.yesPeople.map((personName) => {
+                          const isMe = personName.toLowerCase() === normalizedVoterName.toLowerCase();
+                          return (
+                            <span
+                              key={personName}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                isMe
+                                  ? 'bg-[#005EB8] text-white'
+                                  : 'bg-slate-100 text-slate-700 border border-slate-200'
+                              }`}
+                            >
+                              <Check className="w-2.5 h-2.5" />
+                              {personName}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ==================================================================== */}
+        {/* STEP 3: RESTAURANT SUGGESTIONS & POLL (CLOSES FRI, NOV 20, 11:59 PM) */}
+        {/* ==================================================================== */}
+        <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-2.5">
+              <span className="w-7 h-7 rounded-full bg-[#005EB8] text-white text-xs font-extrabold flex items-center justify-center shrink-0 mt-0.5">
+                3
+              </span>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">
+                    Restaurant Suggestions & Poll
+                  </h2>
+                  {isRestaurantPollClosed ? (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-rose-100 text-rose-800 border border-rose-200">
+                      <Lock className="w-3 h-3" />
+                      Closed
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      <Timer className="w-3 h-3" />
+                      Open Now
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">{countdownLabel}</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleToggleRestaurantPollClose}
+              className={`self-start sm:self-auto inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3 py-2 rounded-xl text-xs font-bold border transition-all touch-manipulation ${
+                isRestaurantPollClosed
+                  ? 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+                  : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+              }`}
+            >
+              {isRestaurantPollClosed ? (
+                <>
+                  <Unlock className="w-3.5 h-3.5" />
+                  <span>Reopen Poll</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>Close Poll Now</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Closed Notice Banner */}
+          {isRestaurantPollClosed ? (
+            <div className="rounded-2xl bg-slate-50 border border-slate-200 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#0B1F3A] text-amber-400 flex items-center justify-center shrink-0">
+                  <Utensils className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm sm:text-base font-extrabold text-[#0B1F3A]">
+                    Restaurant voting closed on Friday, Nov 20 — you can still RSVP for a lunch date above, without a restaurant vote.
+                  </h4>
+                  {winningRestaurants.length > 0 ? (
+                    <p className="text-xs sm:text-sm text-emerald-700 font-bold mt-1">
+                      🏆 Winning Selection: {winningRestaurants.map((r) => `${r.name} (${r.voteCount} votes)`).join(' • ')}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-500 mt-1">No restaurant votes were cast before the poll closed.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* Suggest a Restaurant Form (16px font prevents iOS Safari zoom) */
+            <form onSubmit={handleAddRestaurantSuggestion} className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+              <div className="sm:col-span-5">
+                <input
+                  type="text"
+                  enterKeyHint="next"
+                  value={newRestaurantName}
+                  onChange={(e) => setNewRestaurantName(e.target.value)}
+                  placeholder="Suggest a restaurant (e.g., Capital Grille)"
+                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] text-base outline-none"
+                />
+              </div>
+              <div className="sm:col-span-4">
+                <input
+                  type="text"
+                  enterKeyHint="done"
+                  value={newRestaurantNote}
+                  onChange={(e) => setNewRestaurantNote(e.target.value)}
+                  placeholder="Optional note (cuisine, patio, etc.)"
+                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] text-base outline-none"
+                />
+              </div>
+              <div className="sm:col-span-3">
+                <button
+                  type="submit"
+                  className="w-full min-h-[46px] inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#005EB8] hover:bg-[#004A99] text-white text-sm font-bold shadow-sm transition-all touch-manipulation"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Add Spot</span>
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Suggested Restaurants List & Live Poll */}
+          {restaurantStats.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
+              No restaurant suggestions yet! Add your favorite lunch spot above so the Cartus IT team can vote on it before Friday, Nov 20.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {restaurantStats.map((rest) => {
+                const isVotedByMe =
+                  Array.isArray(activeParticipant?.restaurantVotes) &&
+                  activeParticipant.restaurantVotes.includes(rest.id);
+                const isWinner = topRestaurantVoteCount > 0 && rest.voteCount === topRestaurantVoteCount;
+
+                return (
+                  <div
+                    key={rest.id}
+                    className={`rounded-2xl p-4 border-2 transition-all flex flex-col justify-between gap-3 ${
+                      isWinner && isRestaurantPollClosed
+                        ? 'border-emerald-500 bg-emerald-50/70 shadow-sm'
+                        : isVotedByMe
+                        ? 'border-[#005EB8] bg-sky-50/60'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Utensils className="w-4 h-4 text-[#005EB8] shrink-0" />
+                          <h4 className="font-extrabold text-sm sm:text-base text-[#0B1F3A] truncate">{rest.name}</h4>
+                          {isWinner && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                              <Trophy className="w-2.5 h-2.5 text-amber-600" />
+                              {isRestaurantPollClosed ? 'Winner' : 'Leading'}
+                            </span>
+                          )}
+                        </div>
+                        {rest.note && <p className="text-xs text-slate-600 mt-1">{rest.note}</p>}
+                        <p className="text-[11px] text-slate-400 mt-1">Suggested by {rest.suggestedBy}</p>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={isRestaurantPollClosed}
+                        onClick={() => handleToggleRestaurantVote(rest.id)}
+                        className={`inline-flex items-center justify-center gap-1.5 min-h-[44px] px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all shrink-0 touch-manipulation ${
+                          isRestaurantPollClosed
+                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                            : isVotedByMe
+                            ? 'bg-[#005EB8] text-white shadow-sm'
+                            : 'bg-slate-100 text-slate-700 hover:bg-sky-100 hover:text-[#005EB8]'
+                        }`}
+                      >
+                        <ThumbsUp className="w-3.5 h-3.5" />
+                        <span>{isVotedByMe ? 'Voted' : 'Vote'}</span>
+                        <span className="px-1.5 py-0.5 rounded-md bg-black/10 text-[11px]">{rest.voteCount}</span>
+                      </button>
+                    </div>
+
+                    {/* Voters Who Picked This Restaurant */}
+                    {rest.voters.length > 0 && (
+                      <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] font-semibold text-slate-400">Votes:</span>
+                        {rest.voters.map((voter) => (
+                          <span
+                            key={voter}
+                            className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-slate-100 text-slate-700"
+                          >
+                            {voter}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* ==================================================================== */}
+        {/* TEAM RSVP ROSTER SUMMARY                                             */}
+        {/* ==================================================================== */}
+        {participants.length > 0 && (
+          <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-[#005EB8]" />
+                <h3 className="font-extrabold text-base text-[#0B1F3A]">
+                  Cartus IT RSVP Roster ({participants.length})
+                </h3>
+              </div>
+              <span className="text-xs text-slate-400 hidden sm:inline">Tap any name to edit their picks</span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+              {participants.map((p) => {
+                const pickedDates = eventData.dates.filter(
+                  (d) => p.votes?.[d.id] === 'yes' || p.votes?.[d.id] === 'maybe'
+                );
+                return (
+                  <div
+                    key={p.id}
+                    className="flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-50 border border-slate-200/80"
+                  >
+                    <div
+                      onClick={() => setVoterName(p.name)}
+                      className="flex items-center gap-2.5 min-w-0 cursor-pointer"
+                    >
+                      <span
+                        className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${getAvatarColor(
+                          p.name
+                        )}`}
+                      >
+                        {getInitials(p.name)}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-sm text-[#0B1F3A] truncate">{p.name}</span>
+                          {p.rsvpAfterRestaurantClose && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
+                              RSVP (No Restaurant Vote)
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-500 truncate">
+                          {pickedDates.length === 0
+                            ? 'No dates selected yet'
+                            : pickedDates
+                                .map((d) => {
+                                  const pt = formatDateParts(d.dateStr);
+                                  return `${pt.month} ${pt.day}`;
+                                })
+                                .join(', ')}
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveParticipant(p.id, p.name)}
+                      title={`Remove ${p.name}`}
+                      className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors shrink-0 touch-manipulation"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </main>
+
+      {/* ====================================================================== */}
+      {/* STICKY MOBILE BOTTOM RSVP BAR (iPhone Ergonomic Thumb Bar)             */}
+      {/* ====================================================================== */}
+      <div
+        className="fixed bottom-0 inset-x-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 py-2.5 shadow-lg sm:hidden"
+        style={{ paddingBottom: 'calc(0.625rem + env(safe-area-inset-bottom, 0px))' }}
+      >
+        <div className="flex items-center justify-between gap-2 max-w-5xl mx-auto">
+          <div className="min-w-0">
+            {normalizedVoterName ? (
+              <div className="truncate">
+                <span className="text-xs font-extrabold text-[#0B1F3A] block truncate">
+                  {normalizedVoterName}
+                </span>
+                <span className="text-[11px] text-[#005EB8] font-semibold">
+                  {activeUserYesCount} {activeUserYesCount === 1 ? 'date' : 'dates'} picked
+                </span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById('voter-name-input');
+                  if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.focus();
+                  }
+                }}
+                className="text-xs font-bold text-[#005EB8] underline underline-offset-2 text-left"
+              >
+                Tap to enter your name
+              </button>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShareUrlInput(eventData.sharedUrl || '');
+              setShowShareModal(true);
+            }}
+            className="inline-flex items-center justify-center gap-1.5 min-h-[42px] px-4 py-2 rounded-xl text-xs font-bold text-white bg-[#0B1F3A] active:scale-[0.98] transition-all shrink-0 touch-manipulation"
+          >
+            <Share2 className="w-3.5 h-3.5 text-[#00A3E0]" />
+            <span>Share Poll</span>
+          </button>
+        </div>
+      </div>
+
+      {/* ====================================================================== */}
+      {/* MODAL 1: SHARE WITH CARTUS IT GROUP CHAT (Mobile Bottom Sheet)         */}
+      {/* ====================================================================== */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div
+            className="bg-white rounded-t-3xl sm:rounded-3xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-5"
+            style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A]">Share with Cartus IT Chat</h3>
+                <p className="text-xs sm:text-sm text-slate-500 mt-1">
+                  Paste your public <span className="font-semibold text-[#0B1F3A]">g.co/gemini/share/...</span> link below so everyone can open it on iPhone, Android, or PC.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowShareModal(false)}
+                className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 shrink-0 touch-manipulation"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Public Share Link
+                </label>
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#005EB8]">
+                  <ExternalLink className="w-3 h-3" />
+                  Use Canvas &ldquo;Share &amp; export&rdquo;
+                </span>
+              </div>
+              <div className="flex flex-col xs:flex-row gap-2">
+                <input
+                  type="url"
+                  inputMode="url"
+                  value={shareUrlInput}
+                  onChange={(e) => handleSavePublicShareUrl(e.target.value)}
+                  placeholder="https://g.co/gemini/share/..."
+                  className="flex-1 min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] text-base text-slate-800 outline-none"
+                />
+                {savedShareUrl && (
+                  <button
+                    onClick={() => copyToClipboard(savedShareUrl, 'link')}
+                    className="inline-flex items-center justify-center gap-1.5 min-h-[46px] px-4 py-2.5 rounded-xl bg-[#0B1F3A] hover:bg-[#102A4C] text-white text-sm font-semibold shrink-0 transition-all touch-manipulation"
+                  >
+                    {copiedType === 'link' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedType === 'link' ? 'Copied!' : 'Copy'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Cartus IT Invite Message
+              </label>
+              <textarea
+                readOnly
+                rows={6}
+                value={groupChatInviteText}
+                className="w-full p-3.5 rounded-xl border border-slate-200 bg-slate-50 text-xs sm:text-sm text-slate-700 leading-relaxed resize-none focus:outline-none"
+              />
+              <button
+                onClick={() => copyToClipboard(groupChatInviteText, 'invite')}
+                className="w-full min-h-[48px] inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-gradient-to-r from-[#005EB8] to-[#00A3E0] hover:brightness-110 text-white text-sm font-bold shadow-md shadow-sky-200 transition-all touch-manipulation"
+              >
+                {copiedType === 'invite' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedType === 'invite' ? 'Invite Message Copied!' : 'Copy Invite Message for Chat'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================== */}
+      {/* MODAL 2: ADD CUSTOM DATE (Mobile Bottom Sheet)                         */}
+      {/* ====================================================================== */}
+      {showAddDateModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form
+            onSubmit={handleAddCustomDate}
+            className="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4"
+            style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-extrabold text-[#0B1F3A]">Add Custom Date Option</h3>
+              <button
+                type="button"
+                onClick={() => setShowAddDateModal(false)}
+                className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 touch-manipulation"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Select Date</label>
+                <input
+                  type="date"
+                  required
+                  value={newDateStr}
+                  onChange={(e) => setNewDateStr(e.target.value)}
+                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Lunch Time</label>
+                <select
+                  value={newTimeLabel}
+                  onChange={(e) => setNewTimeLabel(e.target.value)}
+                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none bg-white"
+                >
+                  <option value="11:30 AM">11:30 AM</option>
+                  <option value="12:00 PM">12:00 PM</option>
+                  <option value="12:30 PM">12:30 PM</option>
+                  <option value="1:00 PM">1:00 PM</option>
+                  <option value="1:30 PM">1:30 PM</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowAddDateModal(false)}
+                className="min-h-[44px] px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 touch-manipulation"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="min-h-[44px] px-5 py-2 rounded-xl text-sm font-bold text-white bg-[#005EB8] hover:bg-[#004A99] shadow-sm touch-manipulation"
+              >
+                Add to Poll
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ====================================================================== */}
+      {/* MODAL 3: START A NEW LIVE POLL ROOM (Mobile Bottom Sheet)              */}
+      {/* ====================================================================== */}
+      {showNewPollModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <form
+            onSubmit={handleCreateNewRoom}
+            className="bg-white rounded-t-3xl sm:rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4"
+            style={{ paddingBottom: 'calc(1.25rem + env(safe-area-inset-bottom, 0px))' }}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-extrabold text-[#0B1F3A]">Create Separate Live Poll Room</h3>
+              <button
+                type="button"
+                onClick={() => setShowNewPollModal(false)}
+                className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-400 hover:text-slate-700 touch-manipulation"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Spins up a fresh, isolated live cloud room for another sub-team while keeping your current Cartus IT poll intact.
+            </p>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Event Name</label>
+                <input
+                  type="text"
+                  required
+                  value={newPollTitle}
+                  onChange={(e) => setNewPollTitle(e.target.value)}
+                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 mb-1">Initial Restaurant Note (Optional)</label>
+                <input
+                  type="text"
+                  value={newPollLocation}
+                  onChange={(e) => setNewPollLocation(e.target.value)}
+                  placeholder="e.g., TBD — Vote on Restaurant Suggestions Below!"
+                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 text-base font-medium focus:border-[#005EB8] outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowNewPollModal(false)}
+                className="min-h-[44px] px-4 py-2 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-100 touch-manipulation"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="min-h-[44px] px-5 py-2 rounded-xl text-sm font-bold text-white bg-gradient-to-r from-[#005EB8] to-[#00A3E0] shadow-sm touch-manipulation"
+              >
+                Create Live Room
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
