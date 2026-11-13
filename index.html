@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>FestiveTable - Cartus IT</title>
+  <title>FestiveTable - Cartus and Alumni</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
@@ -16,7 +16,7 @@
   <!-- Run React + JSX via Babel ESM -->
   <script type="text/babel" data-type="module">
     // 1. Imports via web-ready CDN URLs (?deps pins a single shared React instance)
-    import React, { useState, useEffect, useMemo } from 'https://esm.sh/react@18.2.0';
+    import React, { useState, useEffect, useMemo, useRef } from 'https://esm.sh/react@18.2.0';
     import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client?deps=react@18.2.0';
     import {
       Calendar, Users, Share2, Check, Sparkles, Plus, Copy, Trophy, MapPin, Clock, Lock,
@@ -25,7 +25,7 @@
     } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
 
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
     import { getFirestore, doc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
     // 2. Firebase project config
@@ -46,6 +46,94 @@
     // 3. App code
 // Restaurant Poll Cutoff: Friday, November 20, 2026 at 11:59:59 PM EST
 const RESTAURANT_DEADLINE_MS = new Date('2026-11-20T23:59:59-05:00').getTime();
+
+// ============================================================================
+// ORGANIZER (only this Google account may close/reopen the restaurant poll).
+// Stored as a SHA-256 hash so the address isn't published; Firestore rules enforce it.
+// ============================================================================
+const ORGANIZER_EMAIL_SHA256 = '7ecdc79a06bb154b4709cfb027fa1beab8d44a961909bde024bf8f3a6e1ae9e0';
+
+const sha256Hex = async (text) => {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
+// ============================================================================
+// GOOGLE PLACES (restaurants within 10 miles of Danbury, CT)
+// ============================================================================
+const GOOGLE_PLACES_API_KEY = '__PLACES_API_KEY__';
+const SEARCH_CENTER = { latitude: 41.3948, longitude: -73.454 }; // Danbury, CT
+const SEARCH_RADIUS_MILES = 10;
+const SEARCH_RADIUS_METERS = Math.round(SEARCH_RADIUS_MILES * 1609.34);
+const FOOD_PLACE_TYPES = ['restaurant', 'food', 'bar', 'cafe', 'meal_takeaway', 'meal_delivery', 'bakery', 'diner', 'pub'];
+
+const isFoodPlace = (types = []) =>
+  types.some((t) => FOOD_PLACE_TYPES.includes(t) || t.endsWith('_restaurant'));
+
+const milesBetween = (a, b) => {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLng = toRad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLng / 2) ** 2;
+  return 3958.8 * 2 * Math.asin(Math.sqrt(h));
+};
+
+const newPlacesSessionToken = () =>
+  crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+// Autocomplete restricted to a 10-mile circle around Danbury; non-food results are dropped.
+const searchRestaurantPlaces = async (input, sessionToken) => {
+  const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY },
+    body: JSON.stringify({
+      input,
+      sessionToken,
+      includedRegionCodes: ['us'],
+      locationRestriction: { circle: { center: SEARCH_CENTER, radius: SEARCH_RADIUS_METERS } },
+    }),
+  });
+  if (!res.ok) throw new Error(`Places search failed (${res.status})`);
+  const data = await res.json();
+  return (data.suggestions || [])
+    .map((s) => s.placePrediction)
+    .filter((p) => p && p.placeId && isFoodPlace(p.types))
+    .map((p) => ({
+      placeId: p.placeId,
+      mainText: p.structuredFormat?.mainText?.text || p.text?.text || '',
+      secondaryText: p.structuredFormat?.secondaryText?.text || '',
+    }));
+};
+
+const getRestaurantPlaceDetails = async (placeId, sessionToken) => {
+  const res = await fetch(
+    `https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?sessionToken=${encodeURIComponent(sessionToken)}`,
+    {
+      headers: {
+        'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+        'X-Goog-FieldMask': 'id,displayName,formattedAddress,googleMapsUri,rating,userRatingCount,location',
+      },
+    }
+  );
+  if (!res.ok) throw new Error(`Place details failed (${res.status})`);
+  const p = await res.json();
+  return {
+    placeId: p.id,
+    name: p.displayName?.text || '',
+    address: p.formattedAddress || '',
+    mapsUrl: p.googleMapsUri || `https://www.google.com/maps/place/?q=place_id:${p.id}`,
+    rating: typeof p.rating === 'number' ? p.rating : null,
+    userRatingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : null,
+    location: p.location || null,
+  };
+};
+
+// Link for any restaurant (older entries without a Google place fall back to a Maps search)
+const restaurantMapsUrl = (rest) =>
+  rest.mapsUrl ||
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${rest.name} ${rest.address || 'Danbury, CT'}`)}`;
 
 // ============================================================================
 // HELPER UTILITIES & DEFAULT DATA
@@ -167,7 +255,7 @@ const CartusITEmblem = () => (
     <circle cx="44" cy="28" r="2.5" fill="#F87171" />
     <path d="M32 10L33.3 13.7L37 15L33.3 16.3L32 20L30.7 16.3L27 15L30.7 13.7L32 10Z" fill="#FDE047" />
     <text x="32" y="53" textAnchor="middle" fill="#FFFFFF" fontSize="8.5" fontWeight="800" letterSpacing="1.4" fontFamily="system-ui, sans-serif">
-      CARTUS IT
+      CARTUS AND ALUMNI
     </text>
     <defs>
       <linearGradient id="cartusGrad" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
@@ -203,10 +291,10 @@ function App() {
 
   // Event Metadata State (Synced in real time with Firebase Firestore)
   const [eventData, setEventData] = useState({
-    title: 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄🥂',
+    title: 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄🥂',
     targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
     location: 'TBD — Vote on Restaurant Suggestions Below!',
-    notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+    notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
     dates: DEFAULT_CANDIDATE_DATES,
     restaurants: [],
     restaurantPollForceClosed: false,
@@ -237,6 +325,15 @@ function App() {
   // Restaurant Suggestion Inputs
   const [newRestaurantName, setNewRestaurantName] = useState('');
   const [newRestaurantNote, setNewRestaurantNote] = useState('');
+  const [restaurantQuery, setRestaurantQuery] = useState('');
+  const [placeSuggestions, setPlaceSuggestions] = useState([]);
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
+  const [placesError, setPlacesError] = useState('');
+  const [isAddingPlace, setIsAddingPlace] = useState(false);
+  const placesSessionRef = useRef(newPlacesSessionToken());
+
+  // Organizer (Google sign-in) state
+  const [isOrganizer, setIsOrganizer] = useState(false);
 
   // Modal & UI Feedback State
   const [showShareModal, setShowShareModal] = useState(false);
@@ -244,7 +341,7 @@ function App() {
   const [showNewPollModal, setShowNewPollModal] = useState(false);
   const [newDateStr, setNewDateStr] = useState('2026-12-10');
   const [newTimeLabel, setNewTimeLabel] = useState('12:00 PM');
-  const [newPollTitle, setNewPollTitle] = useState('Cartus IT Holiday & New Year Lunch 2026–2027 🎄');
+  const [newPollTitle, setNewPollTitle] = useState('Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄');
   const [newPollLocation, setNewPollLocation] = useState('');
   const [shareUrlInput, setShareUrlInput] = useState('');
   const [copiedType, setCopiedType] = useState(null);
@@ -275,7 +372,9 @@ function App() {
 
   // 1. Authenticate Anonymously with Firebase on Mount
   useEffect(() => {
-    const initAuth = async () => {
+    // Sign in anonymously only when there is no saved session, so an organizer's
+    // Google sign-in survives page reloads.
+    const signInGuest = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
@@ -287,10 +386,16 @@ function App() {
         setSyncStatus('error');
       }
     };
-    initAuth();
 
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
+      if (!currentUser) {
+        setIsOrganizer(false);
+        signInGuest();
+        return;
+      }
+      const email = (currentUser.email || '').trim().toLowerCase();
+      setIsOrganizer(Boolean(email) && currentUser.emailVerified && (await sha256Hex(email)) === ORGANIZER_EMAIL_SHA256);
     });
     return () => unsubscribe();
   }, []);
@@ -308,13 +413,24 @@ function App() {
       async (snap) => {
         if (snap.exists()) {
           const data = snap.data();
+          // One-time rename of text saved before the "Cartus and Alumni" rebrand
+          const renamed = {};
+          ['title', 'notes'].forEach((key) => {
+            if (typeof data[key] === 'string' && data[key].includes('Cartus IT')) {
+              renamed[key] = data[key].split('Cartus IT').join('Cartus and Alumni');
+            }
+          });
+          if (Object.keys(renamed).length > 0) {
+            Object.assign(data, renamed);
+            updateDoc(roomDocRef, renamed).catch((e) => console.error('Error renaming room text:', e));
+          }
           setEventData({
-            title: data.title || 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄🥂',
+            title: data.title || 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄🥂',
             targetWindow: data.targetWindow || 'First 3 Weeks of December 2026 • Requested by Maxim',
             location: data.location || 'TBD — Vote on Restaurant Suggestions Below!',
             notes:
               data.notes ||
-              'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+              'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
             dates: Array.isArray(data.dates) && data.dates.length > 0 ? data.dates : DEFAULT_CANDIDATE_DATES,
             restaurants: Array.isArray(data.restaurants) ? data.restaurants : [],
             restaurantPollForceClosed: Boolean(data.restaurantPollForceClosed),
@@ -325,10 +441,10 @@ function App() {
         } else {
           // Initialize default shared room in Firestore if it doesn't exist yet
           const initialPayload = {
-            title: 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄🥂',
+            title: 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄🥂',
             targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
             location: 'TBD — Vote on Restaurant Suggestions Below!',
-            notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+            notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
             dates: DEFAULT_CANDIDATE_DATES,
             restaurants: [],
             restaurantPollForceClosed: false,
@@ -572,71 +688,150 @@ function App() {
     }
   };
 
-  const handleAddRestaurantSuggestion = async (e) => {
-    e.preventDefault();
+  // Debounced Google Places search while typing in the restaurant box
+  useEffect(() => {
+    const q = restaurantQuery.trim();
+    if (q.length < 2) {
+      setPlaceSuggestions([]);
+      setPlacesError('');
+      setIsSearchingPlaces(false);
+      return;
+    }
+    let cancelled = false;
+    setIsSearchingPlaces(true);
+    const t = setTimeout(async () => {
+      try {
+        const results = await searchRestaurantPlaces(q, placesSessionRef.current);
+        if (!cancelled) {
+          setPlaceSuggestions(results);
+          setPlacesError('');
+        }
+      } catch (err) {
+        console.error('Places search error:', err);
+        if (!cancelled) {
+          setPlaceSuggestions([]);
+          setPlacesError('Google Maps search is unavailable right now. Try again in a moment.');
+        }
+      } finally {
+        if (!cancelled) setIsSearchingPlaces(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [restaurantQuery]);
+
+  // Restaurants already on the poll that match what's being typed
+  const matchingExistingRestaurants = useMemo(() => {
+    const q = restaurantQuery.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return restaurantStats.filter(
+      (r) => r.name.toLowerCase().includes(q) || (r.address || '').toLowerCase().includes(q)
+    );
+  }, [restaurantQuery, restaurantStats]);
+
+  const resetRestaurantSearch = () => {
+    setRestaurantQuery('');
+    setPlaceSuggestions([]);
+    setPlacesError('');
+    setNewRestaurantNote('');
+    placesSessionRef.current = newPlacesSessionToken();
+  };
+
+  // Writes the current user's restaurant votes (creating their entry if needed)
+  const saveRestaurantVotes = async (nextRestVotes) => {
+    const docKey = activeParticipant ? activeParticipant.id : toDocKey(normalizedVoterName);
+    await saveContact(docKey);
+    const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey);
+    await setDoc(
+      voteDocRef,
+      {
+        name: activeParticipant ? activeParticipant.name : normalizedVoterName,
+        votes: activeParticipant ? activeParticipant.votes || {} : {},
+        restaurantVotes: nextRestVotes,
+        rsvpAfterRestaurantClose: false,
+        updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
+      },
+      { merge: true }
+    );
+  };
+
+  // Adds a vote for a restaurant already on the poll (never removes one)
+  const castVoteFor = async (rest) => {
+    const current = activeParticipant ? [...(activeParticipant.restaurantVotes || [])] : [];
+    if (current.includes(rest.id)) {
+      triggerToast(`You already voted for ${rest.name}.`, 'info');
+      return;
+    }
+    await saveRestaurantVotes([...current, rest.id]);
+    triggerToast(`Vote added for ${rest.name}!`);
+  };
+
+  const handlePickExistingRestaurant = async (rest) => {
+    if (isRestaurantPollClosed) {
+      triggerToast('Restaurant voting closed on Friday, Nov 20.', 'info');
+      return;
+    }
+    if (!requireIdentity() || !user) return;
+    try {
+      await castVoteFor(rest);
+      resetRestaurantSearch();
+    } catch (err) {
+      console.error('Error voting on restaurant:', err);
+      triggerToast('Could not save restaurant vote.', 'error');
+    }
+  };
+
+  // Picking a Google Maps result: vote for it if it's already on the poll, otherwise add it
+  const handlePickPlace = async (prediction) => {
     if (isRestaurantPollClosed) {
       triggerToast('Restaurant suggestions closed on Friday, Nov 20.', 'info');
       return;
     }
-    if (!requireIdentity()) return;
-    if (!user) return;
+    if (!requireIdentity() || !user || isAddingPlace) return;
 
-    const cleanName = newRestaurantName.trim();
-    if (!cleanName) {
-      triggerToast('Please enter a restaurant name.', 'error');
-      return;
-    }
-
-    const exists = (eventData.restaurants || []).some(
-      (r) => r.name.toLowerCase() === cleanName.toLowerCase()
-    );
-    if (exists) {
-      triggerToast('That restaurant is already on the list — tap Vote on it below!', 'info');
-      setNewRestaurantName('');
-      setNewRestaurantNote('');
-      return;
-    }
-
-    const newRestObj = {
-      id: 'rest-' + Date.now(),
-      name: cleanName,
-      note: newRestaurantNote.trim(),
-      suggestedBy: normalizedVoterName || 'Cartus IT Member',
-    };
-
-    const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
+    setIsAddingPlace(true);
     try {
+      const place = await getRestaurantPlaceDetails(prediction.placeId, placesSessionRef.current);
+      if (place.location && milesBetween(SEARCH_CENTER, place.location) > SEARCH_RADIUS_MILES + 0.5) {
+        triggerToast(`${place.name} is more than ${SEARCH_RADIUS_MILES} miles from Danbury.`, 'error');
+        return;
+      }
+
+      const existing = (eventData.restaurants || []).find((r) => r.placeId && r.placeId === place.placeId);
+      if (existing) {
+        await castVoteFor(existing);
+        resetRestaurantSearch();
+        return;
+      }
+
+      const newRestObj = {
+        id: 'rest-' + Date.now(),
+        placeId: place.placeId,
+        name: place.name,
+        address: place.address,
+        mapsUrl: place.mapsUrl,
+        rating: place.rating,
+        userRatingCount: place.userRatingCount,
+        note: newRestaurantNote.trim(),
+        suggestedBy: normalizedVoterName || 'Cartus and Alumni Member',
+      };
+      const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
       await updateDoc(roomDocRef, {
         restaurants: [...(eventData.restaurants || []), newRestObj],
       });
 
-      {
-        const docKey = activeParticipant ? activeParticipant.id : toDocKey(normalizedVoterName);
-        await saveContact(docKey);
-        const currentRestVotes = activeParticipant ? [...(activeParticipant.restaurantVotes || [])] : [];
-        if (!currentRestVotes.includes(newRestObj.id)) {
-          currentRestVotes.push(newRestObj.id);
-        }
-        const voteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey);
-        await setDoc(
-          voteDocRef,
-          {
-            name: activeParticipant ? activeParticipant.name : normalizedVoterName,
-            votes: activeParticipant ? activeParticipant.votes || {} : {},
-            restaurantVotes: currentRestVotes,
-            rsvpAfterRestaurantClose: false,
-            updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
-          },
-          { merge: true }
-        );
-      }
+      const current = activeParticipant ? [...(activeParticipant.restaurantVotes || [])] : [];
+      await saveRestaurantVotes([...current, newRestObj.id]);
 
-      setNewRestaurantName('');
-      setNewRestaurantNote('');
-      triggerToast(`Added "${cleanName}" to the restaurant poll!`);
+      resetRestaurantSearch();
+      triggerToast(`Added "${place.name}" to the restaurant poll with your vote!`);
     } catch (err) {
       console.error('Error adding restaurant:', err);
-      triggerToast('Could not add restaurant suggestion.', 'error');
+      triggerToast('Could not add that restaurant. Please try again.', 'error');
+    } finally {
+      setIsAddingPlace(false);
     }
   };
 
@@ -677,8 +872,39 @@ function App() {
     }
   };
 
+  const handleOrganizerSignIn = async () => {
+    try {
+      const result = await signInWithPopup(auth, new GoogleAuthProvider());
+      const email = (result.user.email || '').trim().toLowerCase();
+      if ((await sha256Hex(email)) !== ORGANIZER_EMAIL_SHA256) {
+        triggerToast('That Google account is not the poll organizer.', 'error');
+        await signOut(auth);
+      } else {
+        triggerToast('Signed in as organizer.');
+      }
+    } catch (err) {
+      if (err?.code !== 'auth/popup-closed-by-user' && err?.code !== 'auth/cancelled-popup-request') {
+        console.error('Organizer sign-in error:', err);
+        triggerToast('Organizer sign-in failed. Allow pop-ups and try again.', 'error');
+      }
+    }
+  };
+
+  const handleOrganizerSignOut = async () => {
+    try {
+      await signOut(auth);
+      triggerToast('Signed out of organizer mode.');
+    } catch (err) {
+      console.error('Organizer sign-out error:', err);
+    }
+  };
+
   const handleToggleRestaurantPollClose = async () => {
     if (!user) return;
+    if (!isOrganizer) {
+      triggerToast('Only the poll organizer can close or reopen the restaurant poll.', 'error');
+      return;
+    }
     const roomDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId);
     const nextState = !eventData.restaurantPollForceClosed;
     try {
@@ -690,6 +916,7 @@ function App() {
       );
     } catch (err) {
       console.error('Error toggling restaurant poll state:', err);
+      triggerToast('Could not change the poll state.', 'error');
     }
   };
 
@@ -819,10 +1046,10 @@ function App() {
     if (!user) return;
     const newId = generateRoomId();
     const initialPayload = {
-      title: newPollTitle.trim() || 'Cartus IT Holiday & New Year Lunch 2026–2027 🎄',
+      title: newPollTitle.trim() || 'Cartus and Alumni Holiday & New Year Lunch 2026–2027 🎄',
       targetWindow: 'First 3 Weeks of December 2026 • Requested by Maxim',
       location: newPollLocation.trim() || 'TBD — Vote on Restaurant Suggestions Below!',
-      notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus IT holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
+      notes: 'Maxim requested the first 2–3 weeks of December (Dec 1 – Dec 18) for our Cartus and Alumni holiday celebration. Enter your name, tap any date(s) that work for you, and suggest/vote on a restaurant before Friday, Nov 20 at 11:59 PM!',
       dates: DEFAULT_CANDIDATE_DATES,
       restaurants: [],
       restaurantPollForceClosed: false,
@@ -886,7 +1113,7 @@ function App() {
             .join(' • ')}`
         : '\n🍽️ Restaurant Poll: Open until Fri, Nov 20 at 11:59 PM — suggest & vote on a spot!';
     const linkLine = savedShareUrl ? `\n\nTap here to enter your name & pick a date:\n${savedShareUrl}` : '';
-    return `🎄 *${eventData.title}* 🥂\n🔵 *Cartus IT Team • Christmas & New Year 2026–2027*\n🗓️ Primary Window: First 3 Weeks of December 2026 (Dec 1 – Dec 18) — Requested by Maxim${restLine}\n\nHey Cartus IT! Just enter your name and tap the December dates that work for you (you can also see who already picked each date!):${linkLine}`;
+    return `🎄 *${eventData.title}* 🥂\n🔵 *Cartus and Alumni Team • Christmas & New Year 2026–2027*\n🗓️ Primary Window: First 3 Weeks of December 2026 (Dec 1 – Dec 18) — Requested by Maxim${restLine}\n\nHey Cartus and Alumni! Just enter your name and tap the December dates that work for you (you can also see who already picked each date!):${linkLine}`;
   }, [eventData, savedShareUrl, restaurantStats, isRestaurantPollClosed]);
 
   const finalAnnouncementText = useMemo(() => {
@@ -895,7 +1122,7 @@ function App() {
     const formatted = formatDateParts(lockedObj.dateStr);
     const winningRest = winningRestaurants.length > 0 ? winningRestaurants.map((r) => r.name).join(' / ') : eventData.location;
     const linkLine = savedShareUrl ? `\n🔗 Poll Board: ${savedShareUrl}` : '';
-    return `🎉 *CONFIRMED: ${eventData.title}* 🎉\n🔵 *Cartus IT Holiday & New Year Celebration*\n\n📅 *Date:* ${formatted.full}\n⏰ *Time:* ${lockedObj.timeLabel}\n🍽️ *Restaurant:* ${winningRest}\n👥 *Confirmed Attendees (${lockedObj.yesCount}):* ${lockedObj.yesPeople.join(', ') || 'Team'}${linkLine}\n\nHappy Holidays & Happy New Year 2027, Cartus IT! 🎄🥂`;
+    return `🎉 *CONFIRMED: ${eventData.title}* 🎉\n🔵 *Cartus and Alumni Holiday & New Year Celebration*\n\n📅 *Date:* ${formatted.full}\n⏰ *Time:* ${lockedObj.timeLabel}\n🍽️ *Restaurant:* ${winningRest}\n👥 *Confirmed Attendees (${lockedObj.yesCount}):* ${lockedObj.yesPeople.join(', ') || 'Team'}${linkLine}\n\nHappy Holidays & Happy New Year 2027, Cartus and Alumni! 🎄🥂`;
   }, [eventData, dateStats, savedShareUrl, winningRestaurants]);
 
   const lockedDateObj = dateStats.find((d) => d.id === eventData.lockedDateId);
@@ -921,7 +1148,7 @@ function App() {
       )}
 
       <main className="max-w-5xl mx-auto px-3 sm:px-6 pt-4 sm:pt-6 space-y-5 sm:space-y-6">
-        {/* Cartus IT Hero Event Banner */}
+        {/* Cartus and Alumni Hero Event Banner */}
         <section className="relative overflow-hidden rounded-2xl sm:rounded-3xl bg-gradient-to-br from-[#0B1F3A] via-[#102A4C] to-[#004A99] text-white p-4 sm:p-8 shadow-xl shadow-slate-900/15 border border-[#00A3E0]/30">
           <div className="absolute -right-12 -top-12 w-56 h-56 rounded-full bg-[#00A3E0]/15 blur-2xl pointer-events-none" />
           <div className="absolute right-8 -bottom-16 w-48 h-48 rounded-full bg-amber-400/15 blur-2xl pointer-events-none" />
@@ -949,6 +1176,105 @@ function App() {
           </div>
         </section>
 
+        {/* ==================================================================== */}
+        {/* LIVE POLL RESULTS: LEADING DATES & LEADING RESTAURANT                */}
+        {/* ==================================================================== */}
+        {(() => {
+          const totalPeople = participants.length;
+          const leadingDates = topDates.filter((d) => d.yesCount > 0).slice(0, 3);
+          const restaurantVoterCount = participants.filter((p) => (p.restaurantVotes || []).length > 0).length;
+          const leadingRestaurants = restaurantStats.filter((r) => r.voteCount > 0).slice(0, 3);
+          const pct = (n, total) => (total > 0 ? Math.round((n / total) * 100) : 0);
+          return (
+            <section className="bg-white rounded-2xl sm:rounded-3xl p-4 sm:p-6 shadow-sm border border-slate-200/90">
+              <div className="flex items-center justify-between gap-2 mb-4">
+                <div className="flex items-center gap-2">
+                  <Trophy className="w-5 h-5 text-amber-500" />
+                  <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">Live Poll Results</h2>
+                </div>
+                <span className="text-xs font-semibold text-slate-500">
+                  {totalPeople} {totalPeople === 1 ? 'person' : 'people'} responded
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#005EB8] mb-2.5">
+                    <Calendar className="w-3.5 h-3.5" /> Leading Dates
+                  </h3>
+                  {leadingDates.length === 0 ? (
+                    <p className="text-sm text-slate-500">No date picks yet.</p>
+                  ) : (
+                    <ol className="space-y-3">
+                      {leadingDates.map((d, i) => {
+                        const isLeader = d.yesCount === maxYesCount;
+                        return (
+                          <li key={d.id}>
+                            <div className="flex items-baseline justify-between gap-2 text-sm">
+                              <span className={`font-bold ${isLeader ? 'text-[#0B1F3A]' : 'text-slate-700'}`}>
+                                {isLeader ? '🏆 ' : `${i + 1}. `}
+                                {formatDateParts(d.dateStr).full}
+                              </span>
+                              <span className="shrink-0 text-xs font-semibold text-slate-500">
+                                {d.yesCount} of {totalPeople} ({pct(d.yesCount, totalPeople)}%)
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${isLeader ? 'bg-[#005EB8]' : 'bg-sky-300'}`}
+                                style={{ width: `${pct(d.yesCount, totalPeople)}%` }}
+                              />
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+                </div>
+
+                <div>
+                  <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-[#005EB8] mb-2.5">
+                    <Utensils className="w-3.5 h-3.5" /> Leading Restaurant
+                  </h3>
+                  {leadingRestaurants.length === 0 ? (
+                    <p className="text-sm text-slate-500">No restaurant votes yet.</p>
+                  ) : (
+                    <ol className="space-y-3">
+                      {leadingRestaurants.map((r, i) => {
+                        const isLeader = r.voteCount === topRestaurantVoteCount;
+                        return (
+                          <li key={r.id}>
+                            <div className="flex items-baseline justify-between gap-2 text-sm">
+                              <a
+                                href={restaurantMapsUrl(r)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`font-bold hover:underline truncate ${isLeader ? 'text-[#0B1F3A]' : 'text-slate-700'}`}
+                              >
+                                {isLeader ? '🏆 ' : `${i + 1}. `}
+                                {r.name}
+                              </a>
+                              <span className="shrink-0 text-xs font-semibold text-slate-500">
+                                {r.voteCount} {r.voteCount === 1 ? 'vote' : 'votes'} ({pct(r.voteCount, restaurantVoterCount)}%)
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 rounded-full bg-slate-100 overflow-hidden">
+                              <div
+                                className={`h-full rounded-full ${isLeader ? 'bg-amber-400' : 'bg-amber-200'}`}
+                                style={{ width: `${pct(r.voteCount, restaurantVoterCount)}%` }}
+                              />
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  )}
+                </div>
+              </div>
+            </section>
+          );
+        })()}
+
         {/* Locked Date Confirmation Banner (If Finalized) */}
         {lockedDateObj && (
           <section className="rounded-2xl bg-emerald-50 border-2 border-emerald-500 p-4 sm:p-6 shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -959,7 +1285,7 @@ function App() {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-[11px] font-bold uppercase tracking-wider px-2.5 py-0.5 rounded-full bg-emerald-200 text-emerald-900">
-                    Official Cartus IT Lunch Date
+                    Official Cartus and Alumni Lunch Date
                   </span>
                 </div>
                 <h2 className="text-lg sm:text-xl font-extrabold text-emerald-950 mt-1">
@@ -1370,6 +1696,7 @@ function App() {
               </div>
             </div>
 
+            {isOrganizer && (
             <button
               type="button"
               onClick={handleToggleRestaurantPollClose}
@@ -1391,6 +1718,7 @@ function App() {
                 </>
               )}
             </button>
+            )}
           </div>
 
           {/* Closed Notice Banner */}
@@ -1415,44 +1743,125 @@ function App() {
               </div>
             </div>
           ) : (
-            /* Suggest a Restaurant Form (16px font prevents iOS Safari zoom) */
-            <form onSubmit={handleAddRestaurantSuggestion} className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-              <div className="sm:col-span-5">
+            /* Restaurant search: existing poll entries first, then Google Maps results (16px font prevents iOS zoom) */
+            <div className="space-y-2.5">
+              <div className="relative">
+                <MapPin className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
-                  type="text"
-                  enterKeyHint="next"
-                  value={newRestaurantName}
-                  onChange={(e) => setNewRestaurantName(e.target.value)}
-                  placeholder="Suggest a restaurant (e.g., Capital Grille)"
-                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] text-base outline-none"
+                  type="search"
+                  enterKeyHint="search"
+                  autoComplete="off"
+                  aria-label="Search for a restaurant on Google Maps"
+                  value={restaurantQuery}
+                  onChange={(e) => setRestaurantQuery(e.target.value)}
+                  placeholder="Search Google Maps for a restaurant near Danbury"
+                  className="w-full min-h-[48px] pl-10 pr-10 py-3 rounded-xl border-2 border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] focus:ring-2 focus:ring-[#005EB8]/20 text-base outline-none transition-all"
                 />
+                {restaurantQuery && (
+                  <button
+                    type="button"
+                    onClick={resetRestaurantSearch}
+                    aria-label="Clear restaurant search"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 touch-manipulation"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
               </div>
-              <div className="sm:col-span-4">
-                <input
-                  type="text"
-                  enterKeyHint="done"
-                  value={newRestaurantNote}
-                  onChange={(e) => setNewRestaurantNote(e.target.value)}
-                  placeholder="Optional note (cuisine, patio, etc.)"
-                  className="w-full min-h-[46px] px-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-[#005EB8] text-base outline-none"
-                />
-              </div>
-              <div className="sm:col-span-3">
-                <button
-                  type="submit"
-                  className="w-full min-h-[46px] inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-[#005EB8] hover:bg-[#004A99] text-white text-sm font-bold shadow-sm transition-all touch-manipulation"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Add Spot</span>
-                </button>
-              </div>
-            </form>
+              <p className="text-[11px] text-slate-500 px-1">
+                Restaurants within {SEARCH_RADIUS_MILES} miles of Danbury, CT. Already suggested? Pick it from the list to add your vote.
+              </p>
+
+              {restaurantQuery.trim().length >= 2 && (
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm divide-y divide-slate-100 overflow-hidden">
+                  {matchingExistingRestaurants.length > 0 && (
+                    <div className="p-2">
+                      <p className="px-2 pt-1 pb-1.5 text-[11px] font-bold uppercase tracking-wider text-[#005EB8]">
+                        Already on the poll: tap to vote
+                      </p>
+                      {matchingExistingRestaurants.map((rest) => (
+                        <button
+                          key={rest.id}
+                          type="button"
+                          onClick={() => handlePickExistingRestaurant(rest)}
+                          className="w-full flex items-center justify-between gap-3 px-2.5 py-2.5 rounded-xl text-left hover:bg-sky-50 touch-manipulation"
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-sm font-bold text-[#0B1F3A] truncate">{rest.name}</span>
+                            {rest.address && <span className="block text-xs text-slate-500 truncate">{rest.address}</span>}
+                          </span>
+                          <span className="shrink-0 inline-flex items-center gap-1 text-xs font-bold text-[#005EB8]">
+                            <ThumbsUp className="w-3.5 h-3.5" />
+                            {rest.voteCount}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="p-2">
+                    <p className="px-2 pt-1 pb-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                      Google Maps results
+                    </p>
+                    {isSearchingPlaces ? (
+                      <p className="px-2.5 py-2.5 text-sm text-slate-500">Searching…</p>
+                    ) : placesError ? (
+                      <p className="px-2.5 py-2.5 text-sm text-rose-700">{placesError}</p>
+                    ) : placeSuggestions.length === 0 ? (
+                      <p className="px-2.5 py-2.5 text-sm text-slate-500">
+                        No restaurants found within {SEARCH_RADIUS_MILES} miles of Danbury. Try a different name.
+                      </p>
+                    ) : (
+                      placeSuggestions.map((p) => {
+                        const alreadyListed = (eventData.restaurants || []).some((r) => r.placeId === p.placeId);
+                        return (
+                          <button
+                            key={p.placeId}
+                            type="button"
+                            disabled={isAddingPlace}
+                            onClick={() => handlePickPlace(p)}
+                            className="w-full flex items-center justify-between gap-3 px-2.5 py-2.5 rounded-xl text-left hover:bg-sky-50 disabled:opacity-60 touch-manipulation"
+                          >
+                            <span className="min-w-0">
+                              <span className="block text-sm font-bold text-[#0B1F3A] truncate">{p.mainText}</span>
+                              {p.secondaryText && <span className="block text-xs text-slate-500 truncate">{p.secondaryText}</span>}
+                            </span>
+                            <span className="shrink-0 inline-flex items-center gap-1 text-xs font-bold text-[#005EB8]">
+                              {alreadyListed ? (
+                                <>
+                                  <ThumbsUp className="w-3.5 h-3.5" /> Vote
+                                </>
+                              ) : (
+                                <>
+                                  <Plus className="w-3.5 h-3.5" /> Add
+                                </>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  <div className="p-3 bg-slate-50">
+                    <input
+                      type="text"
+                      enterKeyHint="done"
+                      value={newRestaurantNote}
+                      onChange={(e) => setNewRestaurantNote(e.target.value)}
+                      placeholder="Optional note for a new suggestion (patio, private room, etc.)"
+                      className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-200 bg-white focus:border-[#005EB8] text-base outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           {/* Suggested Restaurants List & Live Poll */}
           {restaurantStats.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">
-              No restaurant suggestions yet! Add your favorite lunch spot above so the Cartus IT team can vote on it before Friday, Nov 20.
+              No restaurant suggestions yet! Add your favorite lunch spot above so the Cartus and Alumni team can vote on it before Friday, Nov 20.
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
@@ -1485,7 +1894,25 @@ function App() {
                             </span>
                           )}
                         </div>
+                        {rest.address && <p className="text-xs text-slate-600 mt-1">{rest.address}</p>}
+                        {typeof rest.rating === 'number' && (
+                          <p className="text-xs text-amber-700 font-semibold mt-0.5">
+                            ★ {rest.rating.toFixed(1)}
+                            {typeof rest.userRatingCount === 'number' && (
+                              <span className="text-slate-400 font-normal"> ({rest.userRatingCount.toLocaleString()} Google reviews)</span>
+                            )}
+                          </p>
+                        )}
                         {rest.note && <p className="text-xs text-slate-600 mt-1">{rest.note}</p>}
+                        <a
+                          href={restaurantMapsUrl(rest)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 mt-1.5 text-xs font-bold text-[#005EB8] hover:underline"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          Open in Google Maps
+                        </a>
                         <p className="text-[11px] text-slate-400 mt-1">Suggested by {rest.suggestedBy}</p>
                       </div>
 
@@ -1537,7 +1964,7 @@ function App() {
               <div className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-[#005EB8]" />
                 <h3 className="font-extrabold text-base text-[#0B1F3A]">
-                  Cartus IT RSVP Roster ({participants.length})
+                  Cartus and Alumni RSVP Roster ({participants.length})
                 </h3>
               </div>
               <span className="text-xs text-slate-400 hidden sm:inline">Tap any name to edit their picks</span>
@@ -1600,6 +2027,22 @@ function App() {
             </div>
           </section>
         )}
+
+        {/* Organizer sign-in (only the organizer's Google account can close the restaurant poll) */}
+        <footer className="pt-2 pb-28 sm:pb-8 text-center text-xs text-slate-400">
+          {isOrganizer ? (
+            <span>
+              Signed in as organizer ·{' '}
+              <button type="button" onClick={handleOrganizerSignOut} className="underline underline-offset-2 hover:text-slate-600">
+                Sign out
+              </button>
+            </span>
+          ) : (
+            <button type="button" onClick={handleOrganizerSignIn} className="underline underline-offset-2 hover:text-slate-600">
+              Organizer sign-in
+            </button>
+          )}
+        </footer>
       </main>
 
       {/* ====================================================================== */}
@@ -1652,7 +2095,7 @@ function App() {
       </div>
 
       {/* ====================================================================== */}
-      {/* MODAL 1: SHARE WITH CARTUS IT GROUP CHAT (Mobile Bottom Sheet)         */}
+      {/* MODAL 1: SHARE WITH CARTUS AND ALUMNI GROUP CHAT (Mobile Bottom Sheet)         */}
       {/* ====================================================================== */}
       {showShareModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -1662,7 +2105,7 @@ function App() {
           >
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h3 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A]">Share with Cartus IT Chat</h3>
+                <h3 className="text-lg sm:text-xl font-extrabold text-[#0B1F3A]">Share with Cartus and Alumni Chat</h3>
                 <p className="text-xs sm:text-sm text-slate-500 mt-1">
                   Paste your public <span className="font-semibold text-[#0B1F3A]">g.co/gemini/share/...</span> link below so everyone can open it on iPhone, Android, or PC.
                 </p>
@@ -1708,7 +2151,7 @@ function App() {
 
             <div className="space-y-2">
               <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Cartus IT Invite Message
+                Cartus and Alumni Invite Message
               </label>
               <textarea
                 readOnly
@@ -1818,7 +2261,7 @@ function App() {
             </div>
 
             <p className="text-xs text-slate-500">
-              Spins up a fresh, isolated live cloud room for another sub-team while keeping your current Cartus IT poll intact.
+              Spins up a fresh, isolated live cloud room for another sub-team while keeping your current Cartus and Alumni poll intact.
             </p>
 
             <div className="space-y-3">
