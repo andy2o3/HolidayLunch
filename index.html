@@ -4,10 +4,39 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Holiday Lunch 2026 - Pre AI Takeover</title>
+  <meta name="theme-color" content="#0b2e22">
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Christmas background: static for every browser, animated snow + lights layered on top when supported */
+    html, body { background-color: #0b2e22; }
+    #xmas-bg {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(1100px 620px at 8% -8%, rgba(220, 38, 38, 0.38), transparent 62%),
+        radial-gradient(900px 520px at 108% 6%, rgba(234, 179, 8, 0.20), transparent 60%),
+        radial-gradient(1000px 700px at 50% 118%, rgba(185, 28, 28, 0.32), transparent 62%),
+        linear-gradient(180deg, #0a2a1f 0%, #10402d 48%, #0b3224 100%);
+    }
+    /* Static snow sprinkle (hidden once the animated snow is running) */
+    #xmas-bg::after {
+      content: ''; position: absolute; inset: 0; opacity: 0.55;
+      background-image:
+        radial-gradient(2px 2px at 20px 30px, #fff, transparent 60%),
+        radial-gradient(1.5px 1.5px at 90px 80px, #fff, transparent 60%),
+        radial-gradient(2.5px 2.5px at 150px 20px, #fff, transparent 60%),
+        radial-gradient(1.5px 1.5px at 60px 140px, #fff, transparent 60%),
+        radial-gradient(2px 2px at 180px 120px, #fff, transparent 60%),
+        radial-gradient(1px 1px at 120px 170px, #fff, transparent 60%);
+      background-size: 200px 200px;
+    }
+    html.xmas-animated #xmas-bg::after { display: none; }
+    #xmas-snow { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+  </style>
 </head>
-<body class="bg-slate-100">
+<body>
+  <div id="xmas-bg" aria-hidden="true"></div>
+  <canvas id="xmas-snow" aria-hidden="true"></canvas>
   <div id="root"></div>
 
   <!-- In-Browser Babel Compiler -->
@@ -1778,7 +1807,7 @@ function App() {
 
   return (
     <div
-      className="min-h-screen bg-[#F1F5F9] text-slate-800 selection:bg-[#00A3E0]/20 selection:text-[#0B1F3A] overflow-x-hidden"
+      className="relative z-[1] min-h-screen bg-transparent text-slate-800 selection:bg-[#00A3E0]/20 selection:text-[#0B1F3A] overflow-x-hidden"
       style={{ paddingBottom: 'calc(5.5rem + env(safe-area-inset-bottom, 0px))' }}
     >
       {/* Floating Toast Notification */}
@@ -3212,16 +3241,16 @@ function App() {
         )}
 
         {/* Organizer sign-in (only the organizer's Google account can close the restaurant poll) */}
-        <footer className="pt-2 pb-28 sm:pb-8 text-center text-xs text-slate-400">
+        <footer className="pt-2 pb-28 sm:pb-8 text-center text-xs text-white/70">
           {isOrganizer ? (
             <span>
               Signed in as organizer ·{' '}
-              <button type="button" onClick={handleOrganizerSignOut} className="underline underline-offset-2 hover:text-slate-600">
+              <button type="button" onClick={handleOrganizerSignOut} className="underline underline-offset-2 hover:text-white">
                 Sign out
               </button>
             </span>
           ) : (
-            <button type="button" onClick={handleOrganizerSignIn} className="underline underline-offset-2 hover:text-slate-600">
+            <button type="button" onClick={handleOrganizerSignIn} className="underline underline-offset-2 hover:text-white">
               Organizer sign-in
             </button>
           )}
@@ -3498,6 +3527,132 @@ function App() {
     // 4. Mount the React app into the DOM
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
+  </script>
+  <!-- Christmas background animation (plain JS; skipped when unsupported or reduced motion is requested) -->
+  <script>
+    (function () {
+      var canvas = document.getElementById('xmas-snow');
+      if (!canvas || !canvas.getContext || !window.requestAnimationFrame) return;
+      var ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)');
+      var saveData = navigator.connection && navigator.connection.saveData;
+      if (saveData) return;
+
+      var W = 0, H = 0, DPR = 1, flakes = [], stars = [], bulbs = [], raf = 0, running = false, last = 0;
+      var COLORS = ['#ef4444', '#22c55e', '#facc15', '#38bdf8', '#f97316'];
+
+      function rand(a, b) { return a + Math.random() * (b - a); }
+
+      function build() {
+        DPR = Math.min(window.devicePixelRatio || 1, 2);
+        W = window.innerWidth; H = window.innerHeight;
+        canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+        var count = Math.max(40, Math.min(160, Math.round((W * H) / 9000)));
+        flakes = [];
+        for (var i = 0; i < count; i++) {
+          var r = rand(0.8, 3.2);
+          flakes.push({ x: rand(0, W), y: rand(-H, H), r: r, vy: 18 + r * 14, sway: rand(8, 28), phase: rand(0, 6.28), freq: rand(0.4, 1.1), a: rand(0.55, 0.95) });
+        }
+        stars = [];
+        for (var j = 0; j < Math.round(W / 70); j++) {
+          stars.push({ x: rand(0, W), y: rand(0, H * 0.6), r: rand(0.6, 1.6), phase: rand(0, 6.28), speed: rand(0.8, 2.2) });
+        }
+        // String lights: two gentle swags across the top
+        bulbs = [];
+        var spacing = W < 640 ? 34 : 44, swags = W < 640 ? 2 : 3, sag = W < 640 ? 26 : 38;
+        var n = Math.floor(W / spacing) + 1;
+        for (var k = 0; k <= n; k++) {
+          var x = k * spacing;
+          var t = (x / W) * swags;
+          var y = 6 + Math.sin(Math.PI * (t - Math.floor(t))) * sag;
+          bulbs.push({ x: x, y: y, c: COLORS[k % COLORS.length], phase: rand(0, 6.28), speed: rand(1.2, 2.6) });
+        }
+      }
+
+      function drawLights(t) {
+        if (bulbs.length < 2) return;
+        ctx.strokeStyle = 'rgba(20, 30, 20, 0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(bulbs[0].x, bulbs[0].y);
+        for (var i = 1; i < bulbs.length; i++) ctx.lineTo(bulbs[i].x, bulbs[i].y);
+        ctx.stroke();
+        for (var b = 0; b < bulbs.length; b++) {
+          var bl = bulbs[b];
+          var glow = 0.55 + 0.45 * Math.sin(t * bl.speed + bl.phase);
+          ctx.globalAlpha = 0.18 * glow;
+          ctx.fillStyle = bl.c;
+          ctx.beginPath(); ctx.arc(bl.x, bl.y + 7, 12, 0, 6.283); ctx.fill();
+          ctx.globalAlpha = 0.6 + 0.4 * glow;
+          ctx.beginPath(); ctx.ellipse(bl.x, bl.y + 7, 3.6, 5.2, 0, 0, 6.283); ctx.fill();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(bl.x - 2, bl.y, 4, 3);
+        }
+        ctx.globalAlpha = 1;
+      }
+
+      function frame(now) {
+        if (!running) return;
+        var dt = Math.min(0.05, (now - (last || now)) / 1000);
+        last = now;
+        var t = now / 1000;
+        ctx.clearRect(0, 0, W, H);
+
+        for (var s = 0; s < stars.length; s++) {
+          var st = stars[s];
+          ctx.globalAlpha = 0.25 + 0.6 * Math.max(0, Math.sin(t * st.speed + st.phase));
+          ctx.fillStyle = '#fde68a';
+          ctx.beginPath(); ctx.arc(st.x, st.y, st.r, 0, 6.283); ctx.fill();
+        }
+
+        ctx.fillStyle = '#ffffff';
+        for (var i = 0; i < flakes.length; i++) {
+          var f = flakes[i];
+          f.y += f.vy * dt;
+          f.phase += f.freq * dt;
+          var x = f.x + Math.sin(f.phase) * f.sway;
+          if (f.y - f.r > H) { f.y = -f.r - rand(0, 40); f.x = rand(0, W); }
+          ctx.globalAlpha = f.a;
+          ctx.beginPath(); ctx.arc(x, f.y, f.r, 0, 6.283); ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        drawLights(t);
+        raf = requestAnimationFrame(frame);
+      }
+
+      function start() {
+        if (running || (reduce && reduce.matches) || document.hidden) return;
+        running = true; last = 0;
+        document.documentElement.classList.add('xmas-animated');
+        raf = requestAnimationFrame(frame);
+      }
+      function stop(clear) {
+        running = false;
+        cancelAnimationFrame(raf);
+        if (clear) {
+          ctx.clearRect(0, 0, W, H);
+          document.documentElement.classList.remove('xmas-animated');
+        }
+      }
+
+      build();
+      var resizeTimer = 0;
+      window.addEventListener('resize', function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(build, 150);
+      });
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) stop(false); else start();
+      });
+      if (reduce && reduce.addEventListener) {
+        reduce.addEventListener('change', function () { if (reduce.matches) stop(true); else start(); });
+      }
+      start();
+    })();
   </script>
 </body>
 </html>
