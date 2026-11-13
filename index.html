@@ -312,7 +312,7 @@ const getRestaurantPlaceDetails = async (placeId, sessionToken) => {
 // CALENDAR INVITES (Google, Outlook.com, Office 365, Apple / any app via .ics)
 // ============================================================================
 const EVENT_TIME_ZONE = 'America/New_York';
-const EVENT_DURATION_MINUTES = 90;
+const EVENT_DURATION_MINUTES = 120;
 
 // UTC offset for New York on a given date, e.g. "-05:00"
 const nyOffsetFor = (dateStr) => {
@@ -983,9 +983,11 @@ const DateRangeFields = ({ range, setRange }) => (
 );
 
 // Organizer dashboard → Event settings (opens collapsed; form starts from the saved event)
-const EventSettingsPanel = ({ eventData, onSave, onAddDates, onRemoveDate }) => {
+const EventSettingsPanel = ({ eventData, onSave, onAddDates, onRemoveDate, onRetimeDates }) => {
   const [form, setForm] = useState(() => formFromEvent(eventData));
   const [saving, setSaving] = useState(false);
+  const [retime, setRetime] = useState(() => timeLabelToInput(eventData.defaultTimeLabel));
+  const [retiming, setRetiming] = useState(false);
   const [single, setSingle] = useState({ date: '', time: timeLabelToInput(eventData.defaultTimeLabel) });
   const [range, setRange] = useState({ start: '', end: '', weekdaysOnly: true });
   const sortedDates = [...eventData.dates].sort((a, b) => a.dateStr.localeCompare(b.dateStr) || a.id.localeCompare(b.id));
@@ -1032,6 +1034,27 @@ const EventSettingsPanel = ({ eventData, onSave, onAddDates, onRemoveDate }) => 
           })}
           {sortedDates.length === 0 && <p className="p-3 text-sm text-slate-500">No dates yet — add some below.</p>}
         </div>
+
+        {sortedDates.length > 0 && (
+          <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+            <p className="text-xs font-bold text-slate-700">Change the time for every date</p>
+            <p className="text-[11px] text-slate-500">Everyone's picks stay on their dates; only the start time changes. It also becomes the default time for new dates.</p>
+            <div className="flex gap-2">
+              <input type="time" className={INPUT_CLS} value={retime} onChange={(e) => setRetime(e.target.value)} />
+              <button
+                type="button"
+                disabled={!retime || retiming}
+                onClick={async () => {
+                  setRetiming(true);
+                  try { await onRetimeDates(timeInputToLabel(retime)); } finally { setRetiming(false); }
+                }}
+                className={`${SMALL_BTN} shrink-0 bg-[#0B1F3A] text-white border-[#0B1F3A] hover:bg-[#102A4C]`}
+              >
+                <Check className="w-3.5 h-3.5" /> {retiming ? 'Saving…' : 'Apply to all dates'}
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="rounded-xl border border-slate-200 p-3 space-y-2">
@@ -2616,6 +2639,19 @@ function App() {
     }
   };
 
+  // Same date ids (votes are keyed by id), new start time on every option
+  const handleRetimeDates = async (timeLabel) => {
+    if (!isOrganizer) return;
+    const dates = eventData.dates.map((d) => ({ ...d, timeLabel }));
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId), { dates, defaultTimeLabel: timeLabel });
+      triggerToast(`All dates now start at ${timeLabel}.`);
+    } catch (err) {
+      console.error('Error changing times:', err);
+      triggerToast('Could not change the times.', 'error');
+    }
+  };
+
   const handleAddDates = async (newDates) => {
     if (!isOrganizer) return;
     const existing = new Set(eventData.dates.map((d) => d.id));
@@ -3139,6 +3175,7 @@ function App() {
                     onSave={handleSaveSettings}
                     onAddDates={handleAddDates}
                     onRemoveDate={handleRemoveDate}
+                    onRetimeDates={handleRetimeDates}
                   />
                 )}
               </div>
