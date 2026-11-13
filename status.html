@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Poll Status · Live</title>
+<meta name="description" content="Live poll update: responses, top dates and how to vote.">
+<meta property="og:title" content="Live poll update">
+<meta property="og:description" content="See how many have responded and which dates are leading. Haven't voted yet? Tap to add yours.">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; background: #06122a; }
+  body { display: flex; justify-content: center; align-items: flex-start; overflow-x: hidden; font-family: "Segoe UI", system-ui, -apple-system, Arial, sans-serif; color: #fff; }
+  #stage { width: 1080px; height: 1350px; transform-origin: top left; position: absolute; left: 0; top: 0; overflow: hidden;
+    background: radial-gradient(circle at 20% 10%, #1e4d8c 0, transparent 45%), radial-gradient(circle at 85% 90%, #7a1d2b 0, transparent 45%), #0B1F3A; }
+  #holder { position: relative; overflow: hidden; }
+  .snow { position: absolute; border-radius: 50%; background: #fff; }
+  .wrap { position: relative; padding: 70px 80px; }
+  .top { display: flex; align-items: center; gap: 16px; }
+  .tag { display: inline-block; background: #facc15; color: #0B1F3A; font-weight: 800; font-size: 26px; letter-spacing: 2px; padding: 10px 22px; border-radius: 40px; }
+  .live { display: inline-flex; align-items: center; gap: 10px; font-size: 24px; font-weight: 700; color: #bbf7d0; }
+  .live i { width: 14px; height: 14px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 0 rgba(34,197,94,.7); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,.7); } 70% { box-shadow: 0 0 0 14px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+  h1 { font-size: 84px; line-height: 1.02; margin-top: 26px; font-weight: 900; }
+  h1 span { color: #facc15; }
+  .sub { font-size: 32px; color: #cfe3ff; margin-top: 14px; }
+  .progress { margin-top: 36px; background: rgba(255,255,255,.1); border: 2px solid rgba(255,255,255,.18); border-radius: 30px; padding: 30px 36px; }
+  .progress .line { display: flex; justify-content: space-between; align-items: baseline; font-size: 40px; font-weight: 900; }
+  .progress .line b { color: #facc15; }
+  .progress .bar { margin-top: 18px; height: 40px; border-radius: 24px; background: rgba(255,255,255,.14); overflow: hidden; }
+  .progress .bar i { display: block; height: 100%; border-radius: 24px; background: linear-gradient(90deg, #22c55e, #a3e635); transition: width .8s ease; }
+  .progress p { margin-top: 14px; font-size: 26px; color: #cfe3ff; }
+  .card { background: rgba(255,255,255,.1); border: 2px solid rgba(255,255,255,.18); border-radius: 30px; padding: 32px 36px; margin-top: 30px; }
+  .card h2 { font-size: 28px; letter-spacing: 2px; color: #facc15; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; gap: 22px; margin: 16px 0; font-size: 32px; font-weight: 700; }
+  .row .d { width: 210px; white-space: nowrap; }
+  .row .bar { flex: 1; height: 32px; background: rgba(255,255,255,.12); border-radius: 20px; overflow: hidden; }
+  .row .bar i { display: block; height: 100%; border-radius: 20px; background: linear-gradient(90deg, #38bdf8, #818cf8); transition: width .8s ease; }
+  .row.lead .bar i { background: linear-gradient(90deg, #facc15, #fb923c); }
+  .row .n { width: 60px; text-align: right; }
+  .rest { margin-top: 18px; font-size: 28px; color: #e0ecff; }
+  .rest b { color: #fff; }
+  .cta { position: absolute; left: 80px; right: 80px; bottom: 60px; background: #fff; color: #0B1F3A; border-radius: 30px; padding: 30px 40px; text-align: center; text-decoration: none; display: block; }
+  .cta p { font-size: 36px; font-weight: 900; }
+  .cta .url { font-size: 30px; font-weight: 700; color: #005EB8; margin-top: 8px; }
+  .cta .dl { font-size: 27px; margin-top: 10px; color: #7a1d2b; font-weight: 800; }
+  .empty { font-size: 30px; color: #cfe3ff; }
+  #msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 40px; color: #cfe3ff; text-align: center; padding: 80px; }
+</style>
+</head>
+<body>
+<div id="holder"><div id="stage">
+  <div id="msg">Loading the latest numbers…</div>
+  <div class="wrap" id="content" hidden>
+    <div class="top"><span class="tag" id="tag">🎄 POLL UPDATE</span><span class="live"><i></i>LIVE</span></div>
+    <h1 id="title"></h1>
+    <p class="sub" id="sub"></p>
+    <div class="progress" id="progress">
+      <div class="line"><span id="respLine"></span><b id="pct"></b></div>
+      <div class="bar"><i id="respBar" style="width:0%"></i></div>
+      <p id="respNote"></p>
+    </div>
+    <div class="card">
+      <h2>TOP DATES SO FAR</h2>
+      <div id="dates"></div>
+      <p class="rest" id="rest"></p>
+    </div>
+  </div>
+  <a class="cta" id="cta" hidden>
+    <p>Haven't voted yet? It takes 2 minutes! 🗳️</p>
+    <div class="url" id="url"></div>
+    <div class="dl" id="deadline"></div>
+  </a>
+</div></div>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, doc, collection, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+const DEFAULT_ROOM_ID = 'cartus-it-2026';
+const app = initializeApp({
+  apiKey: 'AIzaSyCNNld1yyPrAdHDSNvGJ6OPNlSo_ON7OUU',
+  authDomain: 'festivetable-cartus.firebaseapp.com',
+  projectId: 'festivetable-cartus',
+  messagingSenderId: '470199312894',
+  appId: '1:470199312894:web:4d14e2d53f5209e9cba0af',
+});
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+const params = new URLSearchParams(location.search);
+const roomId = params.get('room') || DEFAULT_ROOM_ID;
+const pollUrl = new URL(roomId === DEFAULT_ROOM_ID ? './' : `./?room=${encodeURIComponent(roomId)}`, location.href).href;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Fit the 1080x1350 card to the screen
+const fit = () => {
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const vh = window.innerHeight;
+  const scale = Math.min(vw / 1080, vw < 700 ? 1 : vh / 1350, 1) || 1;
+  $('stage').style.transform = `scale(${scale})`;
+  $('holder').style.width = `${1080 * scale}px`;
+  $('holder').style.height = `${1350 * scale}px`;
+};
+window.addEventListener('resize', fit);
+fit();
+
+// Snow
+for (let i = 0; i < 60; i++) {
+  const s = document.createElement('div');
+  s.className = 'snow';
+  const r = 3 + Math.random() * 7;
+  Object.assign(s.style, { width: r + 'px', height: r + 'px', left: Math.random() * 1080 + 'px', top: Math.random() * 1350 + 'px', opacity: 0.2 + Math.random() * 0.5 });
+  $('stage').prepend(s);
+}
+
+let room = null;
+let votes = [];
+
+const kindWords = (kind) => {
+  const k = String(kind || 'lunch').trim().toLowerCase();
+  return { kind: k, KIND: k.replace(/(^|[\s-])(\w)/g, (m, a, b) => a + b.toUpperCase()) };
+};
+const shortDay = (dateStr) => {
+  const d = new Date(`${dateStr}T12:00:00`);
+  return `${d.toLocaleDateString('en-US', { weekday: 'short' })} ${d.getMonth() + 1}/${d.getDate()}`;
+};
+
+const render = () => {
+  if (!room) return;
+  const isDefault = roomId === DEFAULT_ROOM_ID;
+  const W = kindWords(room.eventKind || (isDefault ? 'happy hour' : 'lunch'));
+  const invitedSetting = Number(room.invitedCount) || (isDefault && room.invitedCount === undefined ? 20 : 0);
+  const dates = Array.isArray(room.dates) ? room.dates : [];
+  const restaurants = Array.isArray(room.restaurants) ? room.restaurants : [];
+  const responded = votes.length;
+  const attending = votes.filter((v) => !v.cantMakeIt);
+
+  // Title: swap the word "Lunch" for the event kind when the event isn't a lunch
+  let title = room.title || 'Team Event';
+  if (W.kind !== 'lunch') title = title.replace(/\blunch\b/gi, W.KIND);
+  title = title.replace(/\s*\b20\d\d\b\s*$/, '');
+  const words = title.split(' ');
+  const tail = words.length > 1 ? words.slice(-Math.min(2, words.length - 1)).join(' ') : '';
+  const head = tail ? words.slice(0, words.length - tail.split(' ').length).join(' ') : title;
+  $('title').innerHTML = tail ? `${esc(head)} <span>${esc(tail)}</span>` : `<span>${esc(head)}</span>`;
+  const theme = room.theme || 'christmas';
+  $('tag').textContent = `${theme === 'summer' ? '☀️' : theme === 'winter' ? '❄️' : theme === 'plain' ? '📣' : '🎄'} POLL UPDATE`;
+  const time = dates[0]?.timeLabel || room.defaultTimeLabel || '';
+  $('sub').textContent = [`${dates.length} date${dates.length === 1 ? '' : 's'} to choose from`, time && `starting ${time}`].filter(Boolean).join(' · ');
+  document.title = `${title} · Live poll status`;
+
+  // Responses progress
+  if (invitedSetting > 0) {
+    const invited = Math.max(invitedSetting, responded);
+    const pct = Math.round((responded / invited) * 100);
+    const left = invited - responded;
+    $('respLine').textContent = `${responded} of ${invited} responded`;
+    $('pct').textContent = `${pct}%`;
+    $('respBar').style.width = `${pct}%`;
+    $('respNote').textContent = left > 0 ? `Waiting on ${left} more ${left === 1 ? 'response' : 'responses'}` : 'Everyone has responded — thank you! 🎉';
+  } else {
+    $('respLine').textContent = `${responded} ${responded === 1 ? 'response' : 'responses'} so far`;
+    $('pct').textContent = '';
+    $('respBar').style.width = '100%';
+    $('respNote').textContent = '';
+  }
+
+  // Dates (locked date wins)
+  const stats = dates.map((d) => ({
+    ...d,
+    yes: attending.filter((v) => ['yes', 'maybe'].includes(v.votes?.[d.id])).length,
+  })).sort((a, b) => b.yes - a.yes || a.dateStr.localeCompare(b.dateStr));
+  const locked = dates.find((d) => d.id === room.lockedDateId);
+  const top = stats.filter((d) => d.yes > 0).slice(0, 4);
+  const max = top[0]?.yes || 1;
+  if (locked) {
+    $('dates').innerHTML = `<div class="row lead"><span class="d">🎉 ${esc(shortDay(locked.dateStr))}</span><span style="font-size:30px">It's official — ${esc(locked.timeLabel || '')}</span></div>`;
+  } else {
+    $('dates').innerHTML = top.length
+      ? top.map((d) => `<div class="row ${d.yes === max ? 'lead' : ''}"><span class="d">${esc(shortDay(d.dateStr))}</span><div class="bar"><i style="width:${Math.round((d.yes / max) * 100)}%"></i></div><span class="n">${d.yes}</span></div>`).join('')
+      : '<p class="empty">No date picks yet — be the first!</p>';
+  }
+
+  // Restaurants
+  const restCounts = restaurants.map((r) => ({ name: r.name, n: attending.filter((v) => Array.isArray(v.restaurantVotes) && v.restaurantVotes.includes(r.id)).length }))
+    .sort((a, b) => b.n - a.n);
+  const leaders = restCounts.filter((r) => r.n > 0 && r.n === restCounts[0].n);
+  $('rest').innerHTML = restaurants.length
+    ? `🍽️ ${restaurants.length} restaurant${restaurants.length === 1 ? '' : 's'} suggested${leaders.length ? ` · Leading: <b>${leaders.slice(0, 2).map((r) => esc(r.name)).join(' / ')}</b>` : ''}`
+    : '🍽️ No restaurant suggestions yet';
+
+  // Call to action
+  $('url').textContent = pollUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  $('cta').href = pollUrl;
+  const deadline = Number(room.restaurantDeadlineMs) || new Date('2026-11-20T23:59:59-05:00').getTime();
+  const closed = room.restaurantPollForceClosed || Date.now() > deadline;
+  $('deadline').textContent = closed
+    ? '🔒 Restaurant voting is closed — you can still RSVP'
+    : `⏰ Restaurant voting closes ${new Date(deadline).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`;
+
+  $('msg').hidden = true;
+  $('content').hidden = false;
+  $('cta').hidden = false;
+};
+
+signInAnonymously(auth).then(() => {
+  const roomRef = doc(db, 'artifacts', 'default-app-id', 'public', 'data', 'cartus_rooms', roomId);
+  onSnapshot(roomRef, (snap) => {
+    if (!snap.exists()) { $('msg').textContent = 'This poll could not be found.'; return; }
+    room = snap.data();
+    render();
+  }, () => { $('msg').textContent = 'Could not load the poll right now.'; });
+  onSnapshot(collection(roomRef, 'votes'), (snap) => {
+    votes = snap.docs.map((d) => d.data()).filter((v) => v && v.name);
+    render();
+  });
+}).catch(() => { $('msg').textContent = 'Could not connect right now — try again in a moment.'; });
+</script>
+</body>
+</html>
