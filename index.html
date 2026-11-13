@@ -927,41 +927,6 @@ function App() {
                 {eventData.notes}
               </p>
             </div>
-
-            {/* Mobile-Friendly Schedule Scope Controls */}
-            <div className="grid grid-cols-1 sm:flex sm:flex-wrap items-stretch sm:items-center gap-2 pt-1">
-              <button
-                onClick={handleToggleWeekends}
-                className={`inline-flex items-center justify-center sm:justify-start gap-2 min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all border touch-manipulation ${
-                  hasWeekendsEnabled
-                    ? 'bg-[#00A3E0] text-[#0B1F3A] border-[#00A3E0] shadow-sm font-bold'
-                    : 'bg-white/10 text-sky-100 border-white/20 hover:bg-white/15'
-                }`}
-              >
-                <CalendarPlus className="w-4 h-4 shrink-0" />
-                <span>{hasWeekendsEnabled ? 'Dec Weekends Included' : '+ Include Dec Weekends'}</span>
-              </button>
-
-              <button
-                onClick={handleToggleNewYearWeek}
-                className={`inline-flex items-center justify-center sm:justify-start gap-2 min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all border touch-manipulation ${
-                  hasNewYearEnabled
-                    ? 'bg-amber-400 text-[#0B1F3A] border-amber-300 shadow-sm font-bold'
-                    : 'bg-white/10 text-sky-100 border-white/20 hover:bg-white/15'
-                }`}
-              >
-                <PartyPopper className="w-4 h-4 shrink-0" />
-                <span>{hasNewYearEnabled ? 'New Year 2027 Included' : '+ New Year 2027 (Jan 4–8)'}</span>
-              </button>
-
-              <button
-                onClick={() => setShowAddDateModal(true)}
-                className="inline-flex items-center justify-center sm:justify-start gap-2 min-h-[44px] px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-white/10 text-white border border-white/20 hover:bg-white/15 transition-all touch-manipulation"
-              >
-                <Plus className="w-4 h-4 text-sky-300 shrink-0" />
-                <span>Add Custom Date</span>
-              </button>
-            </div>
           </div>
         </section>
 
