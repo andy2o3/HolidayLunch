@@ -61,7 +61,8 @@ const sha256Hex = async (text) => {
 // ============================================================================
 // GOOGLE PLACES (restaurants within 10 miles of Danbury, CT)
 // ============================================================================
-const GOOGLE_PLACES_API_KEY = '__PLACES_API_KEY__';
+// Browser key: restricted to Places API (New) and https://andy2o3.github.io/*, with daily quota caps
+const GOOGLE_PLACES_API_KEY = 'AIzaSyCauIjacJB-NypfCdDG23yif_BLYSVfVvQ';
 const SEARCH_CENTER = { latitude: 41.3948, longitude: -73.454 }; // Danbury, CT
 const SEARCH_RADIUS_MILES = 10;
 const SEARCH_RADIUS_METERS = Math.round(SEARCH_RADIUS_MILES * 1609.34);
