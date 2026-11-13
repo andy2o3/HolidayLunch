@@ -1,60 +1,49 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import {
-  Calendar,
-  Users,
-  Share2,
-  Check,
-  Sparkles,
-  Plus,
-  Copy,
-  Trophy,
-  MapPin,
-  Clock,
-  Lock,
-  Unlock,
-  PartyPopper,
-  Trash2,
-  X,
-  UserPlus,
-  ChevronRight,
-  AlertCircle,
-  CalendarPlus,
-  Cloud,
-  Wifi,
-  WifiOff,
-  ExternalLink,
-  Utensils,
-  ThumbsUp,
-  CheckCircle2,
-  Timer
-} from 'lucide-react';
-import { initializeApp } from 'firebase/app';
-import {
-  getAuth,
-  signInAnonymously,
-  signInWithCustomToken,
-  onAuthStateChanged
-} from 'firebase/auth';
-import {
-  getFirestore,
-  doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  collection,
-  onSnapshot,
-  serverTimestamp
-} from 'firebase/firestore';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>FestiveTable - Cartus IT</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-100">
+  <div id="root"></div>
 
-// ============================================================================
-// FIREBASE INITIALIZATION
-// ============================================================================
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  <!-- In-Browser Babel Compiler -->
+  <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 
+  <!-- Run React + JSX via Babel ESM -->
+  <script type="text/babel" data-type="module">
+    // 1. Imports via web-ready CDN URLs (?deps pins a single shared React instance)
+    import React, { useState, useEffect, useMemo } from 'https://esm.sh/react@18.2.0';
+    import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client?deps=react@18.2.0';
+    import {
+      Calendar, Users, Share2, Check, Sparkles, Plus, Copy, Trophy, MapPin, Clock, Lock,
+      Unlock, PartyPopper, Trash2, X, UserPlus, ChevronRight, AlertCircle, CalendarPlus,
+      Cloud, Wifi, WifiOff, ExternalLink, Utensils, ThumbsUp, CheckCircle2, Timer
+    } from 'https://esm.sh/lucide-react@0.300.0?deps=react@18.2.0';
+
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+    import { getFirestore, doc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+    // 2. Firebase project config
+    const firebaseConfig = {
+      apiKey: "AIzaSyCNNld1yyPrAdHDSNvGJ6OPNlSo_ON7OUU",
+      authDomain: "festivetable-cartus.firebaseapp.com",
+      projectId: "festivetable-cartus",
+      storageBucket: "festivetable-cartus.firebasestorage.app",
+      messagingSenderId: "470199312894",
+      appId: "1:470199312894:web:4d14e2d53f5209e9cba0af"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+    // 3. App code
 // Restaurant Poll Cutoff: Friday, November 20, 2026 at 11:59:59 PM EST
 const RESTAURANT_DEADLINE_MS = new Date('2026-11-20T23:59:59-05:00').getTime();
 
@@ -172,7 +161,7 @@ const CartusITEmblem = () => (
 // MAIN APPLICATION COMPONENT
 // ============================================================================
 
-export default function App() {
+function App() {
   // Room / Poll Identification from URL query parameter (?room=...)
   const [roomId, setRoomId] = useState(() => {
     try {
@@ -1856,3 +1845,10 @@ export default function App() {
     </div>
   );
 }
+
+    // 4. Mount the React app into the DOM
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
