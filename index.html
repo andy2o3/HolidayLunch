@@ -169,6 +169,7 @@ const normalizeEvent = (data = {}) => ({
   guideEnabled: data.guideEnabled !== undefined ? Boolean(data.guideEnabled) : DEFAULT_EVENT_SETTINGS.guideEnabled,
   defaultTimeLabel: data.defaultTimeLabel || DEFAULT_EVENT_SETTINGS.defaultTimeLabel,
   eventKind: (typeof data.eventKind === 'string' && data.eventKind.trim()) || 'lunch',
+  invitedCount: Math.max(0, Math.min(500, Math.round(Number(data.invitedCount) || 0))),
   organizerUids: Array.isArray(data.organizerUids) ? data.organizerUids : [],
 });
 
@@ -796,6 +797,7 @@ const formFromEvent = (ev) => ({
   timeInput: timeLabelToInput(ev.defaultTimeLabel),
   guideEnabled: ev.guideEnabled,
   eventKind: ev.eventKind,
+  invitedCount: ev.invitedCount || '',
 });
 
 const formToSettings = (form) => {
@@ -811,6 +813,7 @@ const formToSettings = (form) => {
     defaultTimeLabel: timeInputToLabel(form.timeInput || '12:00'),
     guideEnabled: Boolean(form.guideEnabled),
     eventKind: (form.eventKind || 'lunch').trim().toLowerCase().slice(0, 30) || 'lunch',
+    invitedCount: Math.max(0, Math.min(500, Math.round(Number(form.invitedCount) || 0))),
   };
 };
 
@@ -974,6 +977,9 @@ const EventDetailsFields = ({ form, setForm }) => {
         <select className={INPUT_CLS} value={EVENT_KIND_OPTIONS.includes(form.eventKind) ? form.eventKind : 'lunch'} onChange={set('eventKind')}>
           {EVENT_KIND_OPTIONS.map((k) => <option key={k} value={k}>{kindWords(k).Kind}</option>)}
         </select>
+      </Field>
+      <Field label="People invited" hint="Shows a response progress bar at the top of the poll. Leave blank to hide it.">
+        <input type="number" min="0" max="500" className={INPUT_CLS} value={form.invitedCount} onChange={set('invitedCount')} placeholder="e.g. 20" />
       </Field>
       <Field label="Default start time">
         <input type="time" className={INPUT_CLS} value={form.timeInput} onChange={set('timeInput')} />
@@ -1683,7 +1689,7 @@ function App() {
       roomDocRef,
       async (snap) => {
         if (snap.exists()) {
-          setEventData(normalizeEvent({ ...(roomId === DEFAULT_ROOM_ID ? { eventKind: 'happy hour' } : {}), ...snap.data() }));
+          setEventData(normalizeEvent({ ...(roomId === DEFAULT_ROOM_ID ? { eventKind: 'happy hour', invitedCount: 20 } : {}), ...snap.data() }));
           setRoomStatus('ready');
           setSyncStatus('connected');
         } else {
@@ -3034,6 +3040,31 @@ function App() {
               </p>
               )}
             </div>
+
+            {eventData.invitedCount > 0 && (() => {
+              const responded = participants.length;
+              const invited = Math.max(eventData.invitedCount, responded);
+              const pctDone = Math.round((responded / invited) * 100);
+              const left = invited - responded;
+              return (
+                <div className="max-w-xl rounded-2xl bg-white/10 border border-white/15 p-3 sm:p-4">
+                  <div className="flex items-baseline justify-between gap-2 mb-2">
+                    <span className="text-sm sm:text-base font-extrabold text-white">
+                      {responded} of {invited} responded
+                    </span>
+                    <span className="text-xs sm:text-sm font-bold text-amber-200">{pctDone}%</span>
+                  </div>
+                  <div className="w-full h-3 rounded-full bg-white/15 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={invited} aria-valuenow={responded} aria-label="Responses received">
+                    <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-lime-300 transition-all duration-500" style={{ width: `${pctDone}%` }} />
+                  </div>
+                  <p className="mt-2 text-[11px] sm:text-xs text-sky-100/90">
+                    {left > 0
+                      ? `Waiting on ${left} more ${left === 1 ? 'response' : 'responses'} — haven't answered yet? Add yours below 👇`
+                      : 'Everyone has responded — thank you! 🎉'}
+                  </p>
+                </div>
+              );
+            })()}
           </div>
           {ThemeArt && <ThemeArt className={themeCfg.artClass} />}
           </div>
