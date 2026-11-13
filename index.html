@@ -335,6 +335,11 @@ function App() {
   // Organizer (Google sign-in) state
   const [isOrganizer, setIsOrganizer] = useState(false);
 
+  // "Can't make it" form + organizer-only view of private reasons
+  const [showCantMakeItForm, setShowCantMakeItForm] = useState(false);
+  const [cantMakeItReason, setCantMakeItReason] = useState('');
+  const [regretReasons, setRegretReasons] = useState({});
+
   // Modal & UI Feedback State
   const [showShareModal, setShowShareModal] = useState(false);
   const [showAddDateModal, setShowAddDateModal] = useState(false);
@@ -480,6 +485,7 @@ function App() {
               votes: d.votes || {},
               restaurantVotes: Array.isArray(d.restaurantVotes) ? d.restaurantVotes : [],
               rsvpAfterRestaurantClose: Boolean(d.rsvpAfterRestaurantClose),
+              cantMakeIt: Boolean(d.cantMakeIt),
               updatedAtMs: d.updatedAtMs || 0,
             });
           }
@@ -497,6 +503,27 @@ function App() {
       unsubVotes();
     };
   }, [user, roomId]);
+
+  // Organizer only: load the private "can't make it" reasons (Firestore rules block everyone else)
+  useEffect(() => {
+    if (!isOrganizer) {
+      setRegretReasons({});
+      return;
+    }
+    const unsub = onSnapshot(
+      collection(db, 'artifacts', appId, 'private_regrets'),
+      (snap) => {
+        const reasons = {};
+        snap.forEach((d) => {
+          const r = d.data();
+          if (r && r.roomId === roomId && r.reason) reasons[r.docKey] = r.reason;
+        });
+        setRegretReasons(reasons);
+      },
+      (err) => console.error('Error loading reasons:', err)
+    );
+    return () => unsub();
+  }, [isOrganizer, roomId]);
 
   const triggerToast = (msg, type = 'success') => {
     setToastMessage({ text: msg, type });
@@ -536,6 +563,66 @@ function App() {
       el.focus();
     }
     return false;
+  };
+
+  // "Can't make it": clears this person's date and restaurant picks. The optional reason is
+  // stored privately (only the organizer can read it).
+  const handleMarkCantMakeIt = async () => {
+    if (!requireIdentity()) return;
+    if (!user) return;
+    const docKey = activeParticipant ? activeParticipant.id : toDocKey(normalizedVoterName);
+    const name = activeParticipant ? activeParticipant.name : normalizedVoterName;
+    await saveContact(docKey);
+    try {
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', docKey),
+        {
+          name,
+          votes: {},
+          restaurantVotes: [],
+          cantMakeIt: true,
+          rsvpAfterRestaurantClose: activeParticipant ? Boolean(activeParticipant.rsvpAfterRestaurantClose) : false,
+          updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error("Error saving can't-make-it:", err);
+      triggerToast('Could not save your response. Check connection.', 'error');
+      return;
+    }
+
+    const reason = cantMakeItReason.trim().slice(0, 300);
+    if (reason) {
+      try {
+        await setDoc(
+          doc(db, 'artifacts', appId, 'private_regrets', `${roomId}__${docKey}`),
+          { name, docKey, roomId, reason, uid: user.uid, updatedAtMs: Date.now() },
+          { merge: true }
+        );
+      } catch (err) {
+        console.error('Error saving reason:', err);
+      }
+    }
+
+    setShowCantMakeItForm(false);
+    setCantMakeItReason('');
+    triggerToast("Thanks for letting us know. You're marked as can't make it.");
+  };
+
+  const handleUndoCantMakeIt = async () => {
+    if (!activeParticipant || !user) return;
+    try {
+      await setDoc(
+        doc(db, 'artifacts', appId, 'public', 'data', 'cartus_rooms', roomId, 'votes', activeParticipant.id),
+        { cantMakeIt: false },
+        { merge: true }
+      );
+      triggerToast('Got it! Tap the dates that work for you below.');
+    } catch (err) {
+      console.error("Error undoing can't-make-it:", err);
+      triggerToast('Could not update your response.', 'error');
+    }
   };
 
   // Phone numbers go to a separate write-only collection (not readable from the page),
@@ -586,6 +673,7 @@ function App() {
     return eventData.dates.map((d) => {
       const yesPeople = [];
       participants.forEach((p) => {
+        if (p.cantMakeIt) return;
         const val = p.votes?.[d.id];
         if (val === 'yes' || val === 'maybe') {
           yesPeople.push(p.name);
@@ -609,7 +697,7 @@ function App() {
     return (eventData.restaurants || [])
       .map((rest) => {
         const voters = participants
-          .filter((p) => Array.isArray(p.restaurantVotes) && p.restaurantVotes.includes(rest.id))
+          .filter((p) => !p.cantMakeIt && Array.isArray(p.restaurantVotes) && p.restaurantVotes.includes(rest.id))
           .map((p) => p.name);
         return {
           ...rest,
@@ -674,6 +762,7 @@ function App() {
         {
           name: activeParticipant ? activeParticipant.name : normalizedVoterName,
           votes: currentVotes,
+          cantMakeIt: false,
           restaurantVotes: activeParticipant ? activeParticipant.restaurantVotes || [] : [],
           rsvpAfterRestaurantClose: activeParticipant
             ? Boolean(activeParticipant.rsvpAfterRestaurantClose)
@@ -750,6 +839,7 @@ function App() {
         name: activeParticipant ? activeParticipant.name : normalizedVoterName,
         votes: activeParticipant ? activeParticipant.votes || {} : {},
         restaurantVotes: nextRestVotes,
+        cantMakeIt: false,
         rsvpAfterRestaurantClose: false,
         updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
       },
@@ -861,6 +951,7 @@ function App() {
           name: activeParticipant ? activeParticipant.name : normalizedVoterName,
           votes: activeParticipant ? activeParticipant.votes || {} : {},
           restaurantVotes: currentRestVotes,
+          cantMakeIt: false,
           rsvpAfterRestaurantClose: false,
           updatedAtMs: activeParticipant?.updatedAtMs || Date.now(),
         },
@@ -1180,7 +1271,8 @@ function App() {
         {/* LIVE POLL RESULTS: LEADING DATES & LEADING RESTAURANT                */}
         {/* ==================================================================== */}
         {(() => {
-          const totalPeople = participants.length;
+          const cantMakeItPeople = participants.filter((p) => p.cantMakeIt);
+          const totalPeople = participants.length - cantMakeItPeople.length;
           const leadingDates = topDates.filter((d) => d.yesCount > 0).slice(0, 3);
           const restaurantVoterCount = participants.filter((p) => (p.restaurantVotes || []).length > 0).length;
           const leadingRestaurants = restaurantStats.filter((r) => r.voteCount > 0).slice(0, 3);
@@ -1192,8 +1284,9 @@ function App() {
                   <Trophy className="w-5 h-5 text-amber-500" />
                   <h2 className="text-base sm:text-lg font-extrabold text-[#0B1F3A]">Live Poll Results</h2>
                 </div>
-                <span className="text-xs font-semibold text-slate-500">
-                  {totalPeople} {totalPeople === 1 ? 'person' : 'people'} responded
+                <span className="text-xs font-semibold text-slate-500 text-right">
+                  {totalPeople} attending
+                  {cantMakeItPeople.length > 0 && ` · ${cantMakeItPeople.length} can't make it`}
                 </span>
               </div>
 
@@ -1271,6 +1364,13 @@ function App() {
                   )}
                 </div>
               </div>
+
+              {cantMakeItPeople.length > 0 && (
+                <p className="mt-4 pt-3 border-t border-slate-100 text-xs text-slate-500">
+                  <span className="font-bold text-rose-700">Can't make it ({cantMakeItPeople.length}):</span>{' '}
+                  {cantMakeItPeople.map((p) => p.name).join(', ')}
+                </p>
+              )}
             </section>
           );
         })()}
@@ -1448,6 +1548,69 @@ function App() {
               })}
             </div>
           )}
+
+          {/* Can't make it option */}
+          <div className="mt-3.5 pt-3 border-t border-slate-100">
+            {activeParticipant?.cantMakeIt ? (
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-3.5 py-3 rounded-xl bg-rose-50 border border-rose-200">
+                <p className="text-sm font-semibold text-rose-900">
+                  You've let everyone know you can't make it. Thanks!
+                </p>
+                <button
+                  type="button"
+                  onClick={handleUndoCantMakeIt}
+                  className="self-start sm:self-auto min-h-[40px] px-3.5 py-2 rounded-xl bg-white border border-rose-200 text-xs font-bold text-rose-800 hover:bg-rose-100 touch-manipulation"
+                >
+                  Actually, I can make it
+                </button>
+              </div>
+            ) : showCantMakeItForm ? (
+              <div className="space-y-2.5 px-3.5 py-3 rounded-xl bg-slate-50 border border-slate-200">
+                <label htmlFor="cant-make-it-reason" className="block text-sm font-bold text-[#0B1F3A]">
+                  Sorry you can't make it! Want to share why? <span className="font-normal text-slate-500">(optional)</span>
+                </label>
+                <textarea
+                  id="cant-make-it-reason"
+                  rows={2}
+                  maxLength={300}
+                  value={cantMakeItReason}
+                  onChange={(e) => setCantMakeItReason(e.target.value)}
+                  placeholder="e.g., Out of town that week"
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white focus:border-[#005EB8] text-base outline-none resize-none"
+                />
+                <p className="text-[11px] text-slate-500">Only the organizer sees your reason. Your name shows as "can't make it."</p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleMarkCantMakeIt}
+                    className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-sm font-bold touch-manipulation"
+                  >
+                    Confirm I can't make it
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowCantMakeItForm(false);
+                      setCantMakeItReason('');
+                    }}
+                    className="min-h-[44px] px-4 py-2 rounded-xl bg-white border border-slate-200 text-sm font-semibold text-slate-700 hover:bg-slate-100 touch-manipulation"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  if (requireIdentity()) setShowCantMakeItForm(true);
+                }}
+                className="text-sm font-semibold text-rose-700 underline underline-offset-2 hover:text-rose-900 touch-manipulation"
+              >
+                Can't make it? Let us know
+              </button>
+            )}
+          </div>
         </section>
 
         {/* ==================================================================== */}
@@ -1994,14 +2157,27 @@ function App() {
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-bold text-sm text-[#0B1F3A] truncate">{p.name}</span>
-                          {p.rsvpAfterRestaurantClose && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
-                              RSVP (No Restaurant Vote)
+                          {p.cantMakeIt ? (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-800">
+                              Can't make it
                             </span>
+                          ) : (
+                            p.rsvpAfterRestaurantClose && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-900">
+                                RSVP (No Restaurant Vote)
+                              </span>
+                            )
                           )}
                         </div>
+                        {p.cantMakeIt && isOrganizer && regretReasons[p.id] && (
+                          <p className="text-xs text-rose-800 italic break-words" title="Only you (organizer) can see this">
+                            🔒 “{regretReasons[p.id]}”
+                          </p>
+                        )}
                         <p className="text-xs text-slate-500 truncate">
-                          {pickedDates.length === 0
+                          {p.cantMakeIt
+                            ? 'Not attending'
+                            : pickedDates.length === 0
                             ? 'No dates selected yet'
                             : pickedDates
                                 .map((d) => {
@@ -2060,7 +2236,9 @@ function App() {
                   {normalizedVoterName}
                 </span>
                 <span className="text-[11px] text-[#005EB8] font-semibold">
-                  {activeUserYesCount} {activeUserYesCount === 1 ? 'date' : 'dates'} picked
+                  {activeParticipant?.cantMakeIt
+                    ? "Can't make it"
+                    : `${activeUserYesCount} ${activeUserYesCount === 1 ? 'date' : 'dates'} picked`}
                 </span>
               </div>
             ) : (
